@@ -1,0 +1,64 @@
+Table users {
+  id uuid [pk, default: 'gen_random_uuid()']
+  email text [unique, null]
+  is_guest boolean [not null, default: true]
+  created_at timestamptz [not null, default: 'now()']
+  updated_at timestamptz [null]
+  deleted_at timestamptz [null]
+}
+
+Table passes {
+  id uuid [pk, default: 'gen_random_uuid()']
+  name text [not null, note:'1회권, 10회권']
+  total_uses int [not null, note:'총 사용 가능 횟수']
+  price int [not null]
+  description text [null]
+  is_active boolean [not null, default: true]
+  note:'이용권 종류'
+}
+
+Table user_passes {
+  id uuid [pk, default: 'gen_random_uuid()']
+  user_id uuid [not null, ref:> users.id, note:'onDelete: cascade']
+  pass_id uuid [not null, ref:> passes.id, note:'restrict']
+  remaining_uses int [not null, note:'잔여 회차']
+  purchased_at timestamptz [not null]
+  expires_at timestamptz [not null, note:'구매일 기준 30일 후 만료']
+  uuid_code text [not null, unique, note:'이용권 인증 코드']
+  note:'이용권 구매 기록. User:Pass = M:N 구조를 해결하는 중간 테이블'
+} 
+
+Table standard_emotions {
+  id uuid [pk, default: 'gen_random_uuid()']
+  name text [not null, note:'기쁨, 슬픔 등']
+  description text [null]
+  soft_order int [not null]
+  color_code text [not null]
+  note:'표준 감정 정의'
+}
+
+Table emotion_entries{
+  id uuid [pk, default: 'gen_random_uuid()']
+  user_pass_id uuid [not null, ref:> user_passes.id, note:'onDelete: cascade']
+  user_id uuid [null, ref:> users.id, note: '직접 연결된 사용자. onDelete: set null']
+  raw_emotion_text text [not null, note:'사용자 입력 원본']
+  standard_emotion_id uuid [null, ref:> standard_emotions.id, note:'GPT 분류 결과. onDelete: set null']
+  situation_text text [not null]
+  journal_text text [not null]
+  standard_emotion_reasoning text [null, note:'GPT가 왜 그렇게 분류했는지']
+  created_at timestamptz [not null, default: 'now()']
+  is_feedback_generated boolean [default: false]
+  note:'감정 분석 요청 및 결과 저장'
+}
+
+Table emotion_feedbacks{
+  id uuid [pk, default: 'gen_random_uuid()']
+  emotion_entry_id uuid [not null, ref:> emotion_entries.id, note:'onDelete: cascade']
+  feedback_text text [not null]
+  language text [not null]
+  gpt_model_used text [not null, note:'추후 enum 고려. 예: gpt-3.5-turbo, gpt-4o, …']
+  temperature float [not null]
+  token_count int [not null]
+  created_at timestamptz [not null, default: 'now()']
+  note:'GPT 피드백 결과'
+}
