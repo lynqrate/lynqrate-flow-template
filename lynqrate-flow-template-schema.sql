@@ -4,7 +4,8 @@ CREATE TABLE "users" (
   "is_guest" boolean NOT NULL DEFAULT true,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz,
-  "deleted_at" timestamptz
+  "deleted_at" timestamptz,
+  "first_activity_at" timestamptz
 );
 
 CREATE TABLE "passes" (
@@ -13,7 +14,8 @@ CREATE TABLE "passes" (
   "total_uses" int NOT NULL,
   "price" int NOT NULL,
   "description" text,
-  "is_active" boolean NOT NULL DEFAULT true
+  "is_active" boolean NOT NULL DEFAULT true,
+  "expires_after_days" int
 );
 
 CREATE TABLE "user_passes" (
@@ -23,7 +25,8 @@ CREATE TABLE "user_passes" (
   "remaining_uses" int NOT NULL,
   "purchased_at" timestamptz NOT NULL,
   "expires_at" timestamptz NOT NULL,
-  "uuid_code" text UNIQUE NOT NULL
+  "uuid_code" text UNIQUE NOT NULL,
+  "first_used_at" timestamptz
 );
 
 CREATE TABLE "standard_emotions" (
@@ -39,10 +42,13 @@ CREATE TABLE "emotion_entries" (
   "user_pass_id" uuid NOT NULL,
   "user_id" uuid,
   "raw_emotion_text" text NOT NULL,
+  "supposed_emotion_text" text,
   "standard_emotion_id" uuid,
-  "situation_text" text NOT NULL,
-  "journal_text" text NOT NULL,
   "standard_emotion_reasoning" text,
+  "situation_raw_text" text NOT NULL,
+  "situation_summary_text" text,
+  "journal_raw_text" text NOT NULL,
+  "journal_summary_text" text,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "is_feedback_generated" boolean DEFAULT false
 );
@@ -89,6 +95,18 @@ COMMENT ON COLUMN "emotion_entries"."standard_emotion_reasoning" IS 'GPT가 왜 
 COMMENT ON TABLE "emotion_feedbacks" IS 'GPT 피드백 결과';
 
 COMMENT ON COLUMN "emotion_feedbacks"."gpt_model_used" IS '추후 enum 고려. 예: gpt-3.5-turbo, gpt-4o, …';
+
+COMMENT ON COLUMN "users"."first_activity_at" IS '이 사용자가 처음 감정일기 or 피드백 요청한 시간';
+
+COMMENT ON COLUMN "user_passes"."first_used_at" IS '이 이용권이 처음 사용된 시간 (예: 감정 분석 요청됨)';
+
+COMMENT ON COLUMN "emotion_entries"."supposed_emotion_text" IS 'GPT가 추정한 감정';
+
+COMMENT ON COLUMN "emotion_entries"."situation_raw_text" IS '상황 원문 (항상 저장)';
+
+COMMENT ON COLUMN "emotion_entries"."journal_raw_text" IS '일기 원문 (항상 저장)';
+
+COMMENT ON COLUMN "passes"."expires_after_days" IS '만료일 계산용';
 
 ALTER TABLE "user_passes" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id");
 
