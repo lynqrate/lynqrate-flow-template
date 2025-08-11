@@ -50,7 +50,10 @@ CREATE TABLE "emotion_entries" (
   "journal_raw_text" text NOT NULL,
   "journal_summary_text" text,
   "created_at" timestamptz NOT NULL DEFAULT now(),
-  "is_feedback_generated" boolean DEFAULT false
+  "is_feedback_generated" boolean DEFAULT false,
+  "status" text NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'ready', 'error')),
+  "error_reason" text
 );
 
 CREATE TABLE "emotion_feedbacks" (
@@ -62,6 +65,26 @@ CREATE TABLE "emotion_feedbacks" (
   "temperature" float NOT NULL,
   "token_count" int NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE "submission_state" (
+  "sid" text PRIMARY KEY,
+  "uuid_code" text NOT NULL,
+  "entry_id" uuid,
+  "submit_status" text NOT NULL CHECK (submit_status in ('pending', 'ready', 'fail')),
+  "fail_reason" text,
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE "submission_history" (
+  "id" bigserial PRIMARY KEY,
+  "tstz" timestamptz NOT NULL DEFAULT now(),
+  "uuid_code" text,
+  "verdict" text NOT NULL CHECK (verdict in ('pass','fail','error')),
+  "reason" text, 
+  "ip" inet,
+  "ua" text,
+  "latency_ms" int
 );
 
 COMMENT ON TABLE "passes" IS '이용권 종류';
@@ -92,6 +115,12 @@ COMMENT ON COLUMN "emotion_entries"."standard_emotion_id" IS 'GPT 분류 결과'
 
 COMMENT ON COLUMN "emotion_entries"."standard_emotion_reasoning" IS 'GPT가 왜 그렇게 분류했는지';
 
+COMMENT ON COLUMN "emotion_entries"."supposed_emotion_text" IS 'GPT가 추정한 감정';
+
+COMMENT ON COLUMN "emotion_entries"."situation_raw_text" IS '상황 원문 (항상 저장)';
+
+COMMENT ON COLUMN "emotion_entries"."journal_raw_text" IS '일기 원문 (항상 저장)';
+
 COMMENT ON TABLE "emotion_feedbacks" IS 'GPT 피드백 결과';
 
 COMMENT ON COLUMN "emotion_feedbacks"."gpt_model_used" IS '추후 enum 고려. 예: gpt-3.5-turbo, gpt-4o, …';
@@ -100,13 +129,15 @@ COMMENT ON COLUMN "users"."first_activity_at" IS '이 사용자가 처음 감정
 
 COMMENT ON COLUMN "user_passes"."first_used_at" IS '이 이용권이 처음 사용된 시간 (예: 감정 분석 요청됨)';
 
-COMMENT ON COLUMN "emotion_entries"."supposed_emotion_text" IS 'GPT가 추정한 감정';
-
-COMMENT ON COLUMN "emotion_entries"."situation_raw_text" IS '상황 원문 (항상 저장)';
-
-COMMENT ON COLUMN "emotion_entries"."journal_raw_text" IS '일기 원문 (항상 저장)';
-
 COMMENT ON COLUMN "passes"."expires_after_days" IS '만료일 계산용';
+
+COMMENT ON COLUMN "submission_state"."sid" IS 'Tally 폼 고유 ID';
+
+COMMENT ON COLUMN "submission_state"."uuid_code" IS 'user_passes.uuid_code';
+
+COMMENT ON COLUMN "submission_state"."entry_id" IS 'emotion_entries.id';
+
+COMMENT ON COLUMN "submission_history"."reason" IS 'not_found, expired, no_uses, inactive, exception';
 
 ALTER TABLE "user_passes" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id");
 
@@ -173,3 +204,12 @@ ALTER TABLE emotion_feedbacks
 ADD CONSTRAINT emotion_feedbacks_emotion_entry_id_fkey
 FOREIGN KEY (emotion_entry_id) REFERENCES emotion_entries(id)
 ON DELETE CASCADE;
+
+-- 조회 자주 쓰는 컬럼에 인덱스
+create index if not exists idx_submission_state_updated_at on submission_state(updated_at desc);
+create index if not exists idx_submission_state_status on submission_state(submit_status);
+
+create index on submission_history (tstz desc);
+create index on submission_history (uuid_code);
+create index on submission_history (verdict);
+create index on submission_history (reason);

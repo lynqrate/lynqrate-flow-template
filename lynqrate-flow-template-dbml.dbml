@@ -68,3 +68,23 @@ Table emotion_feedbacks{
   created_at timestamptz [not null, default: 'now()']
   note:'GPT 피드백 결과'
 }
+
+Table submission_state {
+  sid text [pk, note:'Tally가 폼 제출 건마다 발금하는 고유ID']
+  uuid_code text [not null, note: 'user_passes 테이블의 이용권 인증 코드']
+  entry_id uuid [null, note: 'emotion_entries.id']
+  submit_status text [not null, note: 'pending, fail, ready']
+  fail_reason text [null]
+  updated_at timestamptz [not null, default: 'now()']
+}
+
+Table submission_history {
+  id bigserial [pk]
+  tstz timestamptz [not null, default: 'now()']
+  uuid_code text [null]
+  verdict text [not null, note: 'pass, fail, error']
+  reason text [null, note: 'not_found, expired, no_uses, inactive, exception']
+  ip inet
+  ua text
+  latency_ms int
+}
