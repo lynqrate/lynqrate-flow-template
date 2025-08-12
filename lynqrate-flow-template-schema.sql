@@ -69,22 +69,25 @@ CREATE TABLE "emotion_feedbacks" (
 
 CREATE TABLE "submission_state" (
   "sid" text PRIMARY KEY,
+  "user_pass_id" uuid,
+  "emotion_entry_id" uuid,
   "uuid_code" text NOT NULL,
-  "entry_id" uuid,
   "submit_status" text NOT NULL CHECK (submit_status in ('pending', 'ready', 'fail')),
-  "fail_reason" text,
+  "status_reason" text,
   "updated_at" timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE "submission_history" (
   "id" bigserial PRIMARY KEY,
-  "tstz" timestamptz NOT NULL DEFAULT now(),
+  "user_pass_id" uuid,
+  "emotion_entry_id" uuid,
   "uuid_code" text,
-  "verdict" text NOT NULL CHECK (verdict in ('pass','fail','error')),
-  "reason" text, 
+  "result_status" text NOT NULL CHECK (result_status in ('pass','fail','error')),
+  "result_reason" text, 
   "ip" inet,
-  "ua" text,
-  "latency_ms" int
+  "user_agent" text,
+  "latency_ms" int,
+  "created_at" timestamptz NOT NULL DEFAULT now()
 );
 
 COMMENT ON TABLE "passes" IS '이용권 종류';
@@ -135,9 +138,11 @@ COMMENT ON COLUMN "submission_state"."sid" IS 'Tally 폼 고유 ID';
 
 COMMENT ON COLUMN "submission_state"."uuid_code" IS 'user_passes.uuid_code';
 
-COMMENT ON COLUMN "submission_state"."entry_id" IS 'emotion_entries.id';
+COMMENT ON COLUMN "submission_state"."emotion_entry_id" IS 'emotion_entries.id';
 
-COMMENT ON COLUMN "submission_history"."reason" IS 'not_found, expired, no_uses, inactive, exception';
+COMMENT ON COLUMN "submission_history"."result_reason" IS 'not_found, expired, no_uses, inactive, exception';
+
+COMMENT ON COLUMN "submission_history"."latency_ms" IS '응답까지 걸린 시간(ms)';
 
 ALTER TABLE "user_passes" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id");
 
@@ -205,11 +210,65 @@ ADD CONSTRAINT emotion_feedbacks_emotion_entry_id_fkey
 FOREIGN KEY (emotion_entry_id) REFERENCES emotion_entries(id)
 ON DELETE CASCADE;
 
--- 조회 자주 쓰는 컬럼에 인덱스
-create index if not exists idx_submission_state_updated_at on submission_state(updated_at desc);
-create index if not exists idx_submission_state_status on submission_state(submit_status);
+--7. submission_state.user_pass_id → user_passes.id (사용자 이용권을 참조하되, 부모 삭제 시 기록은 남기고 FK만 NULL로 비움(느슨한 FK))
+ALTER TABLE submission_state
+DROP CONSTRAINT IF EXISTS submission_state_user_pass_id_fkey;
 
-create index on submission_history (tstz desc);
-create index on submission_history (uuid_code);
-create index on submission_history (verdict);
-create index on submission_history (reason);
+ALTER TABLE submission_state
+ADD CONSTRAINT submission_state_user_pass_id_fkey
+FOREIGN KEY (user_pass_id)
+REFERENCES user_passes(id)
+ON DELETE SET NULL;
+
+--8. submission_state.emotion_entry_id → emotion_entries.id (사용자 감정 피드백 내용을 참조하되, 부모 삭제시 기록은 남기고 FK만 NULL로 비움)
+ALTER TABLE submission_state
+DROP CONSTRAINT IF EXISTS submission_state_emotion_entry_id_fkey;
+
+ALTER TABLE submission_state
+ADD CONSTRAINT submission_state_emotion_entry_id_fkey
+FOREIGN KEY (emotion_entry_id)
+REFERENCES emotion_entries(id)
+ON DELETE SET NULL;
+
+--9. submission_history.user_pass_id → user_passes.id (사용자 이용권을 참조하되, 부모 삭제 시 기록은 남기고 FK만 NULL로 비움(느슨한 FK))
+ALTER TABLE submission_history
+DROP CONSTRAINT IF EXISTS submission_history_user_pass_id_fkey;
+
+ALTER TABLE submission_history
+ADD CONSTRAINT submission_history_user_pass_id_fkey
+FOREIGN KEY (user_pass_id) REFERENCES user_passes(id)
+ON DELETE SET NULL;
+
+--10. submission_history.emotion_entry_id → emotion_entries.id (사용자 감정 피드백 내용을 참조하되, 부모 삭제시 기록은 남기고 FK만 NULL로 비움)
+ALTER TABLE submission_history
+DROP CONSTRAINT IF EXISTS submission_history_emotion_entry_id_fkey;
+
+ALTER TABLE submission_history
+ADD CONSTRAINT submission_history_emotion_entry_id_fkey
+FOREIGN KEY (emotion_entry_id) REFERENCES emotion_entries(id)
+ON DELETE SET NULL;
+
+-- 조회 자주 쓰는 컬럼에 인덱스
+-- submission_state
+CREATE INDEX IF NOT EXISTS idx_submission_state_updated_at ON submission_state(updated_at);
+CREATE INDEX IF NOT EXISTS idx_submission_state_status ON submission_state(submit_status);
+CREATE INDEX IF NOT EXISTS idx_submission_state_uuid_code ON submission_state(uuid_code);
+CREATE INDEX IF NOT EXISTS idx_submission_state_user_pass_id ON submission_state(user_pass_id);
+
+-- submission_history
+CREATE INDEX IF NOT EXISTS idx_submission_history_created_at ON submission_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_submission_history_uuid_code ON submission_history(uuid_code);
+CREATE INDEX IF NOT EXISTS idx_submission_history_result_status ON submission_history(result_status);
+CREATE INDEX IF NOT EXISTS idx_submission_history_result_reason ON submission_history(result_reason);
+CREATE INDEX IF NOT EXISTS idx_submission_history_user_pass_id ON submission_history(user_pass_id);
+CREATE INDEX IF NOT EXISTS idx_submission_history_entry_id ON submission_history(emotion_entry_id);
+
+-- (선택) 모니터링 최적화: 최근 실패 빠르게
+CREATE INDEX IF NOT EXISTS idx_submission_history_fail_recent
+  ON submission_history(created_at)
+  WHERE result_status = 'fail';
+
+-- (선택) 복합 인덱스: 상태+시간 순 조회 최적화
+-- 최근 상태별 목록이 잦다면 아래 중 하나만 선택
+-- CREATE INDEX IF NOT EXISTS idx_submission_state_status_time ON submission_state(submit_status, updated_at);
+-- CREATE INDEX IF NOT EXISTS idx_submission_history_status_time ON submission_history(result_status, created_at);
