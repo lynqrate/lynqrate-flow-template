@@ -53,7 +53,10 @@ CREATE TABLE "emotion_entries" (
   "is_feedback_generated" boolean DEFAULT false,
   "status" text NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'ready', 'error')),
-  "error_reason" text
+  "error_reason" text.
+  "emotion_level_label_snapshot" text NOT NULL,
+  "feedback_type_label_snapshot" text NOT NULL,
+  "feedback_speech_label_snapshot" text NOT NULL
 );
 
 CREATE TABLE "emotion_feedbacks" (

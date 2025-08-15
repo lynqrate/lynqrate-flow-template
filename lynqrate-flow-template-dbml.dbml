@@ -54,6 +54,9 @@ Table emotion_entries{
   journal_summary_text text [null]
   created_at timestamptz [not null, default: 'now()']
   is_feedback_generated boolean [default: false]
+  emotion_level_label_snapshot text [not null]
+  feedback_type_label_snapshot text [not null]
+  feedback_speech_label_snapshot text [not null]
   note:'감정 분석 요청 및 결과 저장'
 }
 
