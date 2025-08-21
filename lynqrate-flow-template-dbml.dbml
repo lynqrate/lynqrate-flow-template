@@ -1,6 +1,5 @@
 Table users {
   id uuid [pk, default: 'gen_random_uuid()']
-  email text [unique, null]
   is_guest boolean [not null, default: true]
   created_at timestamptz [not null, default: 'now()']
   updated_at timestamptz [null]
@@ -16,18 +15,22 @@ Table passes {
   description text [null]
   is_active boolean [not null, default: true]
   expires_after_days int [null, note:'만료일 계산용']
+  created_at timestamptz [not null, default: 'now()']
   note:'이용권 종류'
 }
 
 Table user_passes {
   id uuid [pk, default: 'gen_random_uuid()']
-  user_id uuid [not null, ref:> users.id, note:'onDelete: cascade']
+  user_id uuid [null, ref:> users.id, note:'onDelete: restrict']
   pass_id uuid [not null, ref:> passes.id, note:'restrict']
   remaining_uses int [not null, note:'잔여 회차']
   purchased_at timestamptz [not null]
   expires_at timestamptz [not null, note:'구매일 기준 30일 후 만료']
   uuid_code text [not null, unique, note:'이용권 인증 코드']
   first_used_at timestamptz [null, note:'이 이용권이 처음 사용된 시간 (예: 감정 분석 요청됨)']
+  source text [not null, default: 'kmong']
+  source_order_id text [null]
+  buyer_handle text [null]
   note:'이용권 구매 기록. User:Pass = M:N 구조를 해결하는 중간 테이블'
 } 
 
@@ -79,7 +82,8 @@ Table submission_state {
   uuid_code text [not null, note: 'user_passes 테이블의 이용권 인증 코드']
   submit_status text [not null, note: 'pending, fail, ready']
   status_reason text [null]
-  updated_at timestamptz [not null, default: 'now()']
+  updated_at timestamptz [null]
+  craeted_at timestamptz [not null, default: 'now()']
 }
 
 Table submission_history {
@@ -93,4 +97,21 @@ Table submission_history {
   user_agent text [null]
   latency_ms int [null, note: '응답까지 걸린 시간(ms)']
   created_at timestamptz [not null, default: 'now()']
+}
+
+Table one_time_email_deliveries {
+  id uuid [pk, default: 'gen_random_uuid()']
+  user_id uuid [null, ref: > users.id, note: '소유자 알 수 있으면 연결, 아니면 NULL']
+  submission_id uuid [not null, note: '이 이메일이 대응하는 제출/요청 ID (예: 감정일기 제출 ID)']
+  emotion_entry_id uuid [ref: > emotion_entries.id, note: '이메일이 연결된 일기 엔트리']
+  emotion_feedback_id uuid [ref: > emotion_feedbacks.id, note: '이메일이 연결된 피드백 결과']
+  purpose text [not null, default: 'feedback_result', note: '발송 목적 코드 (ex. feedback_result, receipt 등)']
+  email text [not null, note: '1회 발송용 주소; 영구 저장/마케팅 금지']
+  status one_time_email_status [not null, default: 'pending']
+  created_at timestamptz [not null, default: 'now()']
+  sent_at timestamptz [null]
+  fail_reason text [null, note: '실패 사유(옵션): SMTP 오류 등']
+  expires_at timestamptz [not null, default: "now() + interval '7 days'", note: '보관 만료 시각; 만료되면 삭제 대상']
+  deleted_at timestamptz [null, note: '소프트 삭제(옵션)']
+  Note: '피드백 결과 1회 전송 전용 임시 저장소. 장기 보관/마케팅 사용 금지.'
 }

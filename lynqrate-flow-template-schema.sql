@@ -1,6 +1,5 @@
 CREATE TABLE "users" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "email" text UNIQUE,
   "is_guest" boolean NOT NULL DEFAULT true,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz,
@@ -15,18 +14,22 @@ CREATE TABLE "passes" (
   "price" int NOT NULL,
   "description" text,
   "is_active" boolean NOT NULL DEFAULT true,
-  "expires_after_days" int
+  "expires_after_days" int,
+  "created_at" timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE "user_passes" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "user_id" uuid NOT NULL,
+  "user_id" uuid,
   "pass_id" uuid NOT NULL,
   "remaining_uses" int NOT NULL,
   "purchased_at" timestamptz NOT NULL,
   "expires_at" timestamptz NOT NULL,
   "uuid_code" text UNIQUE NOT NULL,
-  "first_used_at" timestamptz
+  "first_used_at" timestamptz,
+  "source" text NOT NULL DEFAULT 'kmong',
+  "source_order_id" text,
+  "buyer_handle" text
 );
 
 CREATE TABLE "standard_emotions" (
@@ -77,7 +80,8 @@ CREATE TABLE "submission_state" (
   "uuid_code" text NOT NULL,
   "submit_status" text NOT NULL CHECK (submit_status in ('pending', 'ready', 'fail')),
   "status_reason" text,
-  "updated_at" timestamptz NOT NULL DEFAULT now()
+  "updated_at" timestamptz,
+  "created_at" timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE "submission_history" (
@@ -91,6 +95,23 @@ CREATE TABLE "submission_history" (
   "user_agent" text,
   "latency_ms" int,
   "created_at" timestamptz NOT NULL DEFAULT now()
+);
+
+create table one_time_email_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid null references users(id) on delete set null,
+  submission_id uuid not null,
+  emotion_entry_id uuid null references emotion_entries(id) on delete cascade,
+  emotion_feedback_id uuid null references emotion_feedbacks(id) on delete cascade,
+  purpose text not null default 'feedback_result',
+  email text not null,
+  submit_status text not null default 'pending'
+    check (submit_status in ('pending','ready','fail')),
+  created_at timestamptz not null default now(),
+  sent_at timestamptz null,
+  fail_reason text null,
+  expires_at timestamptz not null default (now() + interval '7 days'),
+  deleted_at timestamptz null
 );
 
 COMMENT ON TABLE "passes" IS '이용권 종류';
@@ -159,14 +180,34 @@ ALTER TABLE "emotion_entries" ADD FOREIGN KEY ("standard_emotion_id") REFERENCES
 
 ALTER TABLE "emotion_feedbacks" ADD FOREIGN KEY ("emotion_entry_id") REFERENCES "emotion_entries" ("id");
 
--- 1. user_passes.user_id → users.id (삭제 시 구매 기록도 삭제)
+-- uuid_code default 생성
+alter table public.user_passes
+  alter column uuid_code set default (
+    lower(
+      encode(gen_random_bytes(2), 'hex') || '-' ||
+      encode(gen_random_bytes(2), 'hex') || '-' ||
+      encode(gen_random_bytes(2), 'hex') || '-' ||
+      encode(gen_random_bytes(2), 'hex')
+    )
+  );
+
+-- 주문번호 중복 방지 (source + order_id)
+create unique index user_passes_source_order_uidx
+on public.user_passes(source, source_order_id)
+where source_order_id is not null;
+
+-- 잔여 사용횟수는 절대로 음수가 될 수 없음
+alter table public.user_passes
+  add constraint user_passes_remaining_uses_chk check (remaining_uses >= 0);
+
+-- 1. user_passes.user_id → users.id (삭제 시 구매 기록 삭제 제한)
 ALTER TABLE user_passes
 DROP CONSTRAINT user_passes_user_id_fkey;
 
 ALTER TABLE user_passes
 ADD CONSTRAINT user_passes_user_id_fkey
 FOREIGN KEY (user_id) REFERENCES users(id)
-ON DELETE CASCADE;
+ON DELETE RESTRICT;
 
 -- 2. user_passes.pass_id → passes.id (삭제 제한)
 ALTER TABLE user_passes
@@ -270,6 +311,10 @@ CREATE INDEX IF NOT EXISTS idx_submission_history_entry_id ON submission_history
 CREATE INDEX IF NOT EXISTS idx_submission_history_fail_recent
   ON submission_history(created_at)
   WHERE result_status = 'fail';
+
+-- submission_id는 이메일 발송시 자주 조회될 가능성이 높음 → 인덱스 미리 생성
+create index if not exists one_time_email_deliveries_submission_idx
+  on one_time_email_deliveries(submission_id);
 
 -- (선택) 복합 인덱스: 상태+시간 순 조회 최적화
 -- 최근 상태별 목록이 잦다면 아래 중 하나만 선택
