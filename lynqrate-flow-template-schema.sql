@@ -4,7 +4,8 @@ CREATE TABLE "users" (
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz,
   "deleted_at" timestamptz,
-  "first_activity_at" timestamptz
+  "first_activity_at" timestamptz,
+  "email" text
 );
 
 CREATE TABLE "passes" (
@@ -29,7 +30,8 @@ CREATE TABLE "user_passes" (
   "first_used_at" timestamptz,
   "source" text NOT NULL DEFAULT 'kmong',
   "source_order_id" text,
-  "buyer_handle" text
+  "buyer_handle" text,
+  "created_at" timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE "standard_emotions" (

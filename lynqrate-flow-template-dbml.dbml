@@ -5,6 +5,7 @@ Table users {
   updated_at timestamptz [null]
   deleted_at timestamptz [null]
   first_activity_at timestamptz [null, note:'이 사용자가 처음 감정일기 or 피드백 요청한 시간']
+  email text [null, unique]
 }
 
 Table passes {
@@ -31,6 +32,7 @@ Table user_passes {
   source text [not null, default: 'kmong']
   source_order_id text [null]
   buyer_handle text [null]
+  created_at timestamptz [not null, default: 'now()']
   note:'이용권 구매 기록. User:Pass = M:N 구조를 해결하는 중간 테이블'
 } 
 
