@@ -2,7 +2,7 @@ CREATE TABLE "users" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   "is_guest" boolean NOT NULL DEFAULT true,
   "created_at" timestamptz NOT NULL DEFAULT now(),
-  "updated_at" timestamptz,
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
   "deleted_at" timestamptz,
   "first_activity_at" timestamptz,
   "email" text
@@ -82,7 +82,7 @@ CREATE TABLE "submission_state" (
   "uuid_code" text NOT NULL,
   "submit_status" text NOT NULL CHECK (submit_status in ('pending', 'ready', 'fail')),
   "status_reason" text,
-  "updated_at" timestamptz,
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
   "created_at" timestamptz NOT NULL DEFAULT now()
 );
 
@@ -97,6 +97,37 @@ CREATE TABLE "submission_history" (
   "user_agent" text,
   "latency_ms" int,
   "created_at" timestamptz NOT NULL DEFAULT now()
+);
+
+create table analysis_requests (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid null
+        references users(id)
+        on delete cascade
+        -- 특정 유저가 삭제되면 분석 기록도 같이 삭제
+    ,
+    user_pass_id uuid null
+        references user_passes(id)
+        on delete set null
+        -- 이용권이 삭제되어도 분석 기록은 남도록 null 처리
+    ,
+    scope text not null check (scope in ('pass', 'user_all')),
+    status text not null default 'ready' check (status in ('ready', 'fail')),
+    analysis_text text not null,
+    stats_json jsonb,
+    model text not null,
+    token_used int not null default 0,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+create table pass_rollup_digests (
+  id uuid primary key default gen_random_uuid(),
+  user_pass_id uuid not null unique references user_passes(id) on delete cascade,
+  digest_text text not null,
+  last_entry_no int not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table one_time_email_deliveries (
