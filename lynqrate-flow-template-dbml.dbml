@@ -103,23 +103,24 @@ Table submission_history {
 
 Table analysis_requests {
   id uuid [pk, default: 'gen_random_uuid()']
-  user_id uuid [null, ref: > users.id, note: '분석 대상 사용자']
-  user_pass_id uuid [null, ref: > user_passes.id, note: 'pass 단위 분석일 때만 연결 (없으면 null)']
-  scope text [not null, note: "'pass' | 'user_all' (분석 범위)"]
-  status text [not null, default: "'ready' | 'fail' (실행 상태)"]
+  user_id uuid [null, ref: > users.id, note: 'ON DELETE SET NULL, 분석 대상 사용자']
+  user_pass_id uuid [null, ref: > user_passes.id, note: 'ON DELETE SET NULL, pass 단위 분석일 때만 연결 (없으면 null)']
+  scope text [not null, note: "allowed: 'pass' | 'user_all' (분석 범위)"]
+  status text [not null, default: 'ready', note: "allowed: 'ready' | 'fail' (실행 상태)"]
   analysis_text text [not null, note: '사용자에게 보여줄 최종 분석 리포트(서술)']
   stats_json jsonb [null, note: '선택: 숫자 통계 및 보조 데이터. carryover_digest(이전 10회권 요약 3~5줄)도 여기에 저장. 예) {\"carryover_digest\":\"...\"}"']
   model text [not null, note: 'GPT 모델명']
-  token_used int [not null, default: 0, note: '사용 토큰 수(비용 추적)']
+  token_used int [not null, default: 0, note: '>= 0, 사용 토큰 수(비용 추적)']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
+  Note: "CHECK rule: if scope='pass' then user_pass_id NOT NULL and user_id NULL; if scope='user_all' then user_id NOT NULL and user_pass_id NULL"
 }
 
 Table pass_rollup_digests {
   id uuid [pk, default: 'gen_random_uuid()']
-  user_pass_id uuid [not null, unique, ref: > user_passes.id, note: '이 이용권의 롤링 요약을 1행으로 유지(유니크)']
+  user_pass_id uuid [not null, unique, ref: > user_passes.id, note: 'ON DELETE CASCADE, 이 이용권의 롤링 요약을 1행으로 유지(유니크)']
   digest_text text [not null, note: '팩트만 담는 누적 요약(3~5줄, ~500자 권장). 조언/명령문 금지']
-  last_entry_no int [not null, default: 0, note: '이 롤링요약에 반영된 마지막 회차 번호(해당 pass 내 1..10)']
+  last_entry_no int [not null, default: 0, note: '>= 0, 이 롤링요약에 반영된 마지막 회차 번호(해당 pass 내 1..10)']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
 }

@@ -99,33 +99,32 @@ CREATE TABLE "submission_history" (
   "created_at" timestamptz NOT NULL DEFAULT now()
 );
 
+-- analysis_requests 테이블
 create table analysis_requests (
-    id uuid primary key default gen_random_uuid(),
-    user_id uuid null
-        references users(id)
-        on delete cascade
-        -- 특정 유저가 삭제되면 분석 기록도 같이 삭제
-    ,
-    user_pass_id uuid null
-        references user_passes(id)
-        on delete set null
-        -- 이용권이 삭제되어도 분석 기록은 남도록 null 처리
-    ,
-    scope text not null check (scope in ('pass', 'user_all')),
-    status text not null default 'ready' check (status in ('ready', 'fail')),
-    analysis_text text not null,
-    stats_json jsonb,
-    model text not null,
-    token_used int not null default 0,
-    created_at timestamptz not null default now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid null references users(id) on delete set null,
+  user_pass_id uuid null references user_passes(id) on delete set null,
+  scope text not null check (scope in ('pass', 'user_all')),
+  status text not null default 'ready' check (status in ('ready', 'fail')),
+  analysis_text text not null,
+  stats_json jsonb,
+  model text not null,
+  token_used int not null default 0 check (token_used >= 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- scope 규칙 강제
+  constraint ck_analysis_scope_target check (
+    (scope = 'pass'     and user_pass_id is not null and user_id is null) or
+    (scope = 'user_all' and user_id      is not null and user_pass_id is null)
+  )
 );
 
+-- pass_rollup_digests 테이블
 create table pass_rollup_digests (
   id uuid primary key default gen_random_uuid(),
   user_pass_id uuid not null unique references user_passes(id) on delete cascade,
   digest_text text not null,
-  last_entry_no int not null default 0,
+  last_entry_no int not null default 0 check (last_entry_no >= 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
