@@ -80,7 +80,7 @@ CREATE TABLE "submission_state" (
   "user_pass_id" uuid,
   "emotion_entry_id" uuid,
   "uuid_code" text NOT NULL,
-  "submit_status" text NOT NULL CHECK (submit_status in ('pending', 'ready', 'fail')),
+  "submit_status" text NOT NULL CHECK (submit_status in ('pending', 'ready', 'fail', 'done')),
   "status_reason" text,
   "updated_at" timestamptz NOT NULL DEFAULT now(),
   "created_at" timestamptz NOT NULL DEFAULT now()
@@ -105,7 +105,8 @@ create table analysis_requests (
   user_id uuid null references users(id) on delete set null,
   user_pass_id uuid null references user_passes(id) on delete set null,
   scope text not null check (scope in ('pass', 'user_all')),
-  status text not null default 'ready' check (status in ('ready', 'fail')),
+  status text not null default 'pending' check (status in ('pending', 'done')),
+  reason text null,
   analysis_text text not null,
   stats_json jsonb,
   model text not null,
