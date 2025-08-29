@@ -37,6 +37,7 @@ Table user_passes {
   buyer_handle text [null]
   created_at timestamptz [not null, default: `now()`]
   is_active boolean [not null, default: true]
+  prev_pass_id uuid [null, ref:> user_passes.id, note:'이전 이용권(같은 사용자). onDelete: restrict']
   note:'이용권 구매 기록. User:Pass = M:N 구조를 해결하는 중간 테이블'
 } 
 
@@ -90,6 +91,7 @@ Table submission_state {
   status_reason text [null]
   updated_at timestamptz [not null, default: `now()`]
   craeted_at timestamptz [not null, default: `now()`]
+  status_log text [null]
 }
 
 Table submission_history {

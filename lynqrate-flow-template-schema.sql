@@ -35,7 +35,8 @@ CREATE TABLE "user_passes" (
   "source_order_id" text,
   "buyer_handle" text,
   "created_at" timestamptz NOT NULL DEFAULT now(),
-  "is_active" boolean NOT NULL DEFAULT true
+  "is_active" boolean NOT NULL DEFAULT true,
+  "prev_pass_id" uuid
 );
 
 CREATE TABLE "standard_emotions" (
@@ -87,7 +88,8 @@ CREATE TABLE "submission_state" (
   "submit_status" text NOT NULL CHECK (submit_status in ('pending', 'ready', 'fail', 'done')),
   "status_reason" text,
   "updated_at" timestamptz NOT NULL DEFAULT now(),
-  "created_at" timestamptz NOT NULL DEFAULT now()
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "status_log" text
 );
 
 CREATE TABLE "submission_history" (
@@ -216,6 +218,8 @@ ALTER TABLE "emotion_entries" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("i
 ALTER TABLE "emotion_entries" ADD FOREIGN KEY ("standard_emotion_id") REFERENCES "standard_emotions" ("id");
 
 ALTER TABLE "emotion_feedbacks" ADD FOREIGN KEY ("emotion_entry_id") REFERENCES "emotion_entries" ("id");
+
+ALTER TABLE "user_passes" ADD FOREIGN KEY ("prev_pass_id") REFERENCES "user_passes"("id") ON DELETE RESTRICT;
 
 -- uuid_code default 생성
 alter table public.user_passes
@@ -357,3 +361,21 @@ create index if not exists one_time_email_deliveries_submission_idx
 -- 최근 상태별 목록이 잦다면 아래 중 하나만 선택
 -- CREATE INDEX IF NOT EXISTS idx_submission_state_status_time ON submission_state(submit_status, updated_at);
 -- CREATE INDEX IF NOT EXISTS idx_submission_history_status_time ON submission_history(result_status, created_at);
+
+-- 유저 전체 히스토리 (최신순)
+CREATE INDEX IF NOT EXISTS idx_entries_user_created
+  ON emotion_entries (user_id, created_at DESC);
+
+-- 패스별 히스토리 (최신순)
+CREATE INDEX IF NOT EXISTS idx_entries_pass_created
+  ON emotion_entries (user_pass_id, created_at DESC);
+
+-- 사용자별 최근 패스 빠른 탐색
+CREATE INDEX IF NOT EXISTS idx_user_passes_user_created
+  ON user_passes (user_id, created_at DESC);
+
+-- 분석요청 조회용 (둘 다 있으면 충분)
+CREATE INDEX IF NOT EXISTS idx_analysis_user_created
+  ON analysis_requests (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analysis_pass_created
+  ON analysis_requests (user_pass_id, created_at DESC);
