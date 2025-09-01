@@ -1,30 +1,3 @@
-create or replace function update_submission_tables(
-  p_user_pass_id uuid,
-  p_entry_id uuid
-)
-returns void
-language plpgsql
-security definer
-as $$
-begin
-  -- submission_state 업데이트
-  update submission_state
-     set emotion_entry_id = p_entry_id,
-         updated_at = now()
-   where user_pass_id = p_user_pass_id;
-
-  -- submission_history 업데이트
-  update submission_history
-     set emotion_entry_id = p_entry_id
-   where user_pass_id = p_user_pass_id;
-end;
-$$;
-
-grant execute on function update_submission_tables(uuid,uuid) to service_role;
-
-
-
-
 create or replace function public.upsert_pass_rollup_digest(
   p_user_pass_id uuid,
   p_digest_text  text
@@ -51,6 +24,7 @@ begin
   returning d.id, d.user_pass_id, d.digest_text, d.last_entry_no, d.created_at, d.updated_at;
 end;
 $$;
+
 
 
 
@@ -121,42 +95,6 @@ $$;
 
 
 
-create or replace function bind_user_to_pass_simple(
-  p_sid text, p_uuid text, p_email text
-) returns table (ok boolean, reason text, user_pass_id uuid, user_id uuid)
-language plpgsql security definer as $$
-declare v_pass_id uuid; v_user_id uuid;
-begin
-  select id, user_id 
-  into v_pass_id, v_user_id
-  from user_passes 
-  where uuid_code=p_uuid 
-  for update;
-
-  if v_pass_id is null then 
-    return query select false,'not_found',null,null; 
-    return; 
-  end if;
-  
-  if v_user_id is not null then 
-    return query select true,null,v_pass_id,v_user_id; 
-    return; 
-  end if;
-
-  insert into users(is_guest) 
-  values(true) returning id 
-  into v_user_id;
-
-  update user_passes 
-  set user_id=v_user_id, updated_at=now() 
-  where id=v_pass_id;
-  
-  return query select true,null,v_pass_id,v_user_id;
-exception when others then return query select false,'exception',null,null; end;
-$$;
-
-
-
 
 create or replace function mark_feedback_and_done_simple(
   p_sid text, p_entry uuid
@@ -188,242 +126,6 @@ $$;
 
 
 
--- 개시 + 상태/히스토리 기록 + 시드 주입을 원자적으로 수행
-create or replace function seed_and_record_submission(
-  p_sid text,
-  p_uuid_code text,
-  p_user_pass_id uuid,
-  p_reason text,
-  p_ip inet default null,
-  p_user_agent text default null,
-  p_latency_ms int default null,
-  p_set_first_used_at boolean default true
-) returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_now timestamptz := now();
-  v_user_id uuid;
-  v_first_used timestamptz;
-  v_digest_exists boolean;
-  v_prev_pass_id uuid;
-  v_seed text := '';
-  v_seed_source text := 'empty';
-  v_status text := 'seeded';
-  v_reason text := p_reason;
-begin
-  --------------------------------------------------------------------
-  -- 0) 기본 검증: uuid_code ↔ user_pass 매칭
-  --------------------------------------------------------------------
-  perform 1 from user_passes up
-   where up.id = p_user_pass_id and up.uuid_code = p_uuid_code and up.is_active = true;
-  if not found then
-    v_status := 'error'; v_reason := 'mismatch_or_inactive';
-  end if;
-
-  select user_id, first_used_at
-    into v_user_id, v_first_used
-  from user_passes where id = p_user_pass_id
-  for share;
-
-  if v_user_id is null then
-    v_status := 'error'; v_reason := coalesce(v_reason,'user_id_null');
-  end if;
-
-  --------------------------------------------------------------------
-  -- 1) submissions 테이블 처리 (업서트 + 히스토리)
-  --------------------------------------------------------------------
-  -- submission_state: ready로 업서트(이미 있으면 업데이트)
-  insert into submission_state(sid, user_pass_id, uuid_code, submit_status, status_reason, updated_at)
-  values (p_sid, p_user_pass_id, p_uuid_code, 'ready', 'validation_success', v_now)
-  on conflict (sid) do update
-     set user_pass_id = excluded.user_pass_id,
-         uuid_code    = excluded.uuid_code,
-         submit_status= 'ready',
-         status_reason= 'validation_success',
-         updated_at   = v_now;
-
-  -- submission_history: 한 행 기록 (통과 시 pass, 오류면 fail)
-  insert into submission_history(user_pass_id, uuid_code, result_status, result_reason, ip, user_agent, latency_ms, created_at)
-  values (
-    p_user_pass_id,
-    p_uuid_code,
-    case when v_status='error' then 'fail' else 'pass' end,
-    COALESCE(v_reason, p_reason),
-    p_ip, p_user_agent, p_latency_ms, v_now
-  );
-
-  if v_status = 'error' then
-    -- 상태 로그만 남기고 에러 리턴
-    update submission_state
-       set status_reason = v_reason,
-           status_log    = concat_ws(' | ', coalesce(status_log,''), format('8.5 rpc_status=%s reason=%s ts=%s', v_status, v_reason, to_char(v_now,'YYYY-MM-DD HH24:MI:SS'))),
-           updated_at    = v_now
-     where sid = p_sid;
-    return jsonb_build_object('status', v_status, 'reason', v_reason);
-  end if;
-
-  --------------------------------------------------------------------
-  -- 2) 시드 주입(멱등)
-  --------------------------------------------------------------------
-  select exists(select 1 from pass_rollup_digests where user_pass_id = p_user_pass_id)
-    into v_digest_exists;
-
-  if v_digest_exists or v_first_used is not null then
-    v_status := 'skipped';
-    v_reason := CASE
-                WHEN v_digest_exists THEN 'digest_exists'
-                ELSE 'already_used'
-              END;
-  else
-    -- 직전 pass 찾기
-    select up.id
-      into v_prev_pass_id
-    from user_passes up
-    where up.user_id = v_user_id
-      and up.id <> p_user_pass_id
-    order by up.created_at desc
-    limit 1;
-
-    if v_prev_pass_id is not null then
-      -- 1순위: carryover_digest
-      select ar.stats_json->>'carryover_digest' into v_seed
-      from analysis_requests ar
-      where ar.user_pass_id = v_prev_pass_id and ar.scope='pass' and ar.status='done'
-      order by ar.created_at desc limit 1;
-
-      if v_seed is not null and length(v_seed)>0 then
-        v_seed_source := 'carryover_digest';
-      else
-        -- 2순위: 직전 pass digest
-        select prd.digest_text into v_seed
-        from pass_rollup_digests prd
-        where prd.user_pass_id = v_prev_pass_id;
-
-        if v_seed is not null and length(v_seed)>0 then
-          v_seed_source := 'prev_pass_digest';
-        else
-          v_seed := ''; v_seed_source := 'empty';
-        end if;
-      end if;
-    end if;
-
-    -- 새 pass digest 초기화
-    insert into pass_rollup_digests(user_pass_id, digest_text, last_entry_no)
-    values (p_user_pass_id, coalesce(v_seed,''), 0)
-    on conflict (user_pass_id) do nothing;
-
-    -- 첫 사용 시각(옵션)
-    if p_set_first_used_at then
-      update user_passes
-         set first_used_at = v_now
-       where id = p_user_pass_id and first_used_at is null;
-    end if;
-  end if;
-
-  --------------------------------------------------------------------
-  -- 3) 상태 로그 append
-  --------------------------------------------------------------------
-  UPDATE submission_state
-  SET status_log = concat_ws(
-      ' | ',
-      NULLIF(status_log, ''),
-      format('8.5 rpc_status=%s seed_source=%s prev_pass_id=%s ts=%s',
-             v_status, v_seed_source, COALESCE(v_prev_pass_id::text,'-'), to_char(v_now,'YYYY-MM-DD HH24:MI:SS'))
-    ),
-    updated_at = v_now
-  WHERE sid = p_sid;
-
-  -- ✅ 로그 캡핑 추가
-  update submission_state
-   set status_log = right(status_log, 4000),
-       updated_at = v_now
-  where sid = p_sid;
-
-  return jsonb_build_object(
-    'status', v_status,
-    'seed_source', v_seed_source,
-    'prev_pass_id', v_prev_pass_id,
-    'seed_len', coalesce(length(v_seed),0)
-  );
-end $$;
-
-
-
-
-
-create or replace function get_rollup_context(
-  p_user_pass_id uuid,
-  p_limit int default 5
-) returns jsonb
-language sql
-stable
-set search_path = public
-as $$
-with pass_info as (
-  select
-    up.user_id,
-    up.remaining_uses,
-    p.total_uses,
-    (p.total_uses - up.remaining_uses + 1) as entry_no_next
-  from user_passes up
-  join passes p on p.id = up.pass_id
-  where up.id = p_user_pass_id
-),
-prd as (
-  select digest_text, last_entry_no
-  from pass_rollup_digests
-  where user_pass_id = p_user_pass_id
-),
--- 전체 개수
-cnt as (
-  select count(*)::int as total_cnt
-  from emotion_entries
-  where user_pass_id = p_user_pass_id
-),
--- 최근 N개(감정명 조인)
-lastn as (
-  select
-    e.id,
-    e.situation_summary_text,
-    e.journal_summary_text,
-    e.created_at,
-    e.standard_emotion_id,
-    se.name as standard_emotion_name
-  from emotion_entries e
-  left join standard_emotions se
-    on se.id = e.standard_emotion_id
-  where e.user_pass_id = p_user_pass_id
-  order by e.created_at desc
-  limit p_limit
-),
-lastn_json as (
-  select coalesce(
-           (select jsonb_agg(to_jsonb(lastn) order by lastn.created_at desc) from lastn),
-           '[]'::jsonb
-         ) as arr
-)
-select jsonb_build_object(
-  'user_id',        (select user_id from pass_info),
-  'digest',         coalesce((select digest_text   from prd), ''),
-  'last_entry_no',  coalesce((select last_entry_no from prd), 0),
-  'digest_len',     coalesce(length((select digest_text from prd)), 0),
-  'has_digest',     (select exists(select 1 from prd)),
-  'remaining_uses', (select remaining_uses from pass_info),
-  'total_uses',     (select total_uses     from pass_info),
-  'entry_no_next',  (select entry_no_next  from pass_info),
-  'recent_summaries', (select arr from lastn_json),
-  'recent_count',   (select total_cnt from cnt),
-  'has_recent',     ((select total_cnt from cnt) > 0)
-);
-$$;
-
-
-
-
-
 create or replace function normalize_whitespace(p_text text)
 returns text language sql immutable as $$
   select regexp_replace(
@@ -435,6 +137,26 @@ returns text language sql immutable as $$
            E'[\\s]+',  -- 일반 공백, 탭, 엔터 포함
            '', 'g'
          );
+$$;
+
+
+
+
+-- 보이는 텍스트만 정리: 앞뒤 공백 제거 + 제로폭/BOM 제거 + NBSP → 공백
+create or replace function clean_visible_text(p_text text)
+returns text language sql immutable as $$
+  select
+    trim(  -- 앞/뒤 공백, 탭, 개행 정리
+      regexp_replace(
+        regexp_replace(
+          coalesce(p_text,''),
+          E'[\\u200B\\u200C\\u200D\\uFEFF]',  -- 제로폭/ BOM 제거
+          '', 'g'
+        ),
+        E'\\u00A0',                           -- NBSP → 일반 공백
+        ' ', 'g'
+      )
+    )
 $$;
 
 
@@ -497,6 +219,7 @@ begin
   return v_local || '@' || v_domain;
 end;
 $$;
+
 
 
 
@@ -642,6 +365,8 @@ begin
   update submission_state
      set user_pass_id = v_pass.id,
          uuid_code    = p_uuid_code,
+         submit_status= 'ready',
+         status_reason= 'validation_success',
          status_log = right(coalesce(status_log,''), 4000),
          updated_at   = v_now
    where sid = p_sid;
@@ -653,21 +378,31 @@ begin
     'status','ok',
     'user_pass_id', v_pass.id,
     'user_id', v_user_id,
+    'uuid_code', p_uuid_code,
     'remaining_uses', v_pass.remaining_uses,
     'expires_at', v_pass.expires_at,
     'is_active', v_pass.is_active,
-    'normalized_email', nullif(p_email,'')
+    'normalized_email', nullif(p_email,''),
+    'normalized_emotion', normalize_whitespace(p_required->>'raw_emotion'),
+    'situation_trimmed',  clean_visible_text(p_required->>'situation_raw'),
+    'journal_trimmed',    clean_visible_text(p_required->>'journal_raw')
   );
 end $$;
 
 
 
 
--- 엔트리 생성 + submissions 링크(멱등)
-create or replace function create_entry_and_link(
-  p_sid text,                 -- 제출 건 ID(멱등 키)
-  p_user_pass_id uuid,        -- 현재 패스
-  p_entry jsonb               -- 오늘 입력/요약/라벨 묶음 JSON
+
+-- 개시 + 상태/로그 기록 + 시드 주입 (first_used_at은 건드리지 않음)
+create or replace function seed_and_record_submission(
+  p_sid text,
+  p_uuid_code text,
+  p_user_pass_id uuid,
+  p_user_id uuid,                    -- 유효성 RPC에서 받은 user_id 전달
+  p_reason text,
+  p_ip inet default null,
+  p_user_agent text default null,
+  p_latency_ms int default null
 ) returns jsonb
 language plpgsql
 security definer
@@ -675,48 +410,283 @@ set search_path = public
 as $$
 declare
   v_now timestamptz := now();
-  v_user_id uuid;
-  v_existing_entry uuid;
-  v_entry_id uuid;
+  v_state text;
+  v_status text := 'seeded';
+  v_reason text := p_reason;
+  v_seed text := '';
+  v_seed_source text := 'empty';
+  v_prev_pass_id uuid;
+  v_digest_exists boolean;
 begin
-  -- 0) 필수값 체크
+  --------------------------------------------------------------------
+  -- 0) 게이트: 유효성 RPC가 'ready'로 만든 상태인지 확인
+  --------------------------------------------------------------------
+  select submit_status
+    into v_state
+  from submission_state
+  where sid = p_sid;
+
+  if v_state is distinct from 'ready' then
+    return jsonb_build_object('status','error','reason','bad_state');
+  end if;
+
+  --------------------------------------------------------------------
+  -- 1) user_pass 검증 (uuid_code, is_active 일치)
+  --------------------------------------------------------------------
+  perform 1
+  from user_passes
+  where id = p_user_pass_id
+    and user_id = p_user_id
+    and uuid_code = p_uuid_code
+    and is_active = true
+  for update;
+
+  if not found then
+    return jsonb_build_object('status','error','reason','mismatch_or_inactive');
+  end if;
+
+  --------------------------------------------------------------------
+  -- 2) 시드 주입(멱등): digest 존재 여부 체크
+  --------------------------------------------------------------------
+  select exists(select 1 from pass_rollup_digests where user_pass_id = p_user_pass_id)
+    into v_digest_exists;
+
+  if v_digest_exists then
+    v_status := 'skipped';
+    v_reason := 'digest_exists';
+  else
+    -- 직전 pass 찾기
+    select up.id
+      into v_prev_pass_id
+    from user_passes up
+    where up.user_id = p_user_id
+      and up.id <> p_user_pass_id
+    order by up.created_at desc
+    limit 1;
+
+    if v_prev_pass_id is not null then
+      -- 1순위: carryover_digest
+      select ar.stats_json->>'carryover_digest'
+        into v_seed
+      from analysis_requests ar
+      where ar.user_pass_id = v_prev_pass_id
+        and ar.scope='pass'
+        and ar.status='done'
+      order by ar.created_at desc
+      limit 1;
+
+      if coalesce(v_seed,'') = '' then
+        -- 2순위: 직전 pass digest
+        select prd.digest_text
+          into v_seed
+        from pass_rollup_digests prd
+        where prd.user_pass_id = v_prev_pass_id;
+
+        v_seed_source := case when coalesce(v_seed,'')<>'' then 'prev_pass_digest' else 'empty' end;
+      else
+        v_seed_source := 'carryover_digest';
+      end if;
+    end if;
+
+    -- 새 pass digest 초기화
+    insert into pass_rollup_digests(user_pass_id, digest_text, last_entry_no)
+    values (p_user_pass_id, coalesce(v_seed,''), 0)
+    on conflict (user_pass_id) do nothing;
+  end if;
+
+  --------------------------------------------------------------------
+  -- 3) 상태 로그 append
+  --------------------------------------------------------------------
+  update submission_state
+     set status_log = concat_ws(' | ', coalesce(status_log,''), format(
+           'seed status=%s seed_source=%s prev_pass_id=%s ts=%s',
+           v_status, v_seed_source, coalesce(v_prev_pass_id::text,'-'), to_char(v_now,'YYYY-MM-DD HH24:MI:SS')
+         )),
+         updated_at = v_now
+   where sid = p_sid;
+
+  update submission_state
+     set status_log = right(coalesce(status_log,''), 4000),
+         updated_at = v_now
+   where sid = p_sid;
+
+  return jsonb_build_object(
+    'status', v_status,
+    'seed_source', v_seed_source,
+    'prev_pass_id', v_prev_pass_id,
+    'seed_len', coalesce(length(v_seed),0)
+  );
+end $$;
+
+
+
+
+
+create or replace function get_rollup_context(
+  p_user_pass_id uuid,
+  p_limit int default 5
+) returns jsonb
+language sql
+stable
+set search_path = public
+as $$
+with pass_info as (
+  -- 패스 메타 정보 (진행도 계산용)
+  select
+    up.user_id,
+    coalesce(up.remaining_uses, 0) as remaining_uses,    -- NULL일 경우 0으로
+    p.total_uses,
+    -- 다음 엔트리 번호 (최소 1, 최대 total_uses 범위로 보정)
+    greatest(1, least(p.total_uses,
+      (p.total_uses - coalesce(up.remaining_uses, 0) + 1)
+    )) as entry_no_next
+  from user_passes up
+  join passes p on p.id = up.pass_id
+  where up.id = p_user_pass_id
+),
+prd as (
+  -- 롤업 요약(digest)
+  select
+    coalesce(digest_text, '') as digest_text,      -- NULL일 경우 빈 문자열
+    coalesce(last_entry_no, 0) as last_entry_no    -- NULL일 경우 0
+  from pass_rollup_digests
+  where user_pass_id = p_user_pass_id
+),
+cnt as (
+  -- 전체 엔트리 개수
+  select count(*)::int as total_cnt
+  from emotion_entries
+  where user_pass_id = p_user_pass_id
+),
+lastn as (
+  -- 최근 N개의 엔트리 요약 (표준 감정명까지 조인)
+  select
+    e.id,
+    e.situation_summary_text,
+    e.journal_summary_text,
+    e.created_at,
+    e.standard_emotion_id,
+    se.name as standard_emotion_name
+  from emotion_entries e
+  left join standard_emotions se on se.id = e.standard_emotion_id
+  where e.user_pass_id = p_user_pass_id
+  order by e.created_at desc
+  limit p_limit
+),
+lastn_json as (
+  -- 최근 N개를 JSON 배열로 변환 (없으면 [] 반환)
+  select coalesce(
+           (select jsonb_agg(to_jsonb(lastn) order by lastn.created_at desc) from lastn),
+           '[]'::jsonb
+         ) as arr
+)
+-- 최종 JSON 반환
+select jsonb_build_object(
+  -- 진행도 관련
+  'user_id',        (select user_id from pass_info),
+  'remaining_uses', (select remaining_uses from pass_info),
+  'total_uses',     (select total_uses     from pass_info),
+  'entry_no_next',  (select entry_no_next  from pass_info),
+
+  -- 요약(digest)
+  'digest',         (select digest_text   from prd),
+  'last_entry_no',  (select last_entry_no from prd),
+  'digest_len',     coalesce(length((select digest_text from prd)), 0),
+  'has_digest',     (select exists(select 1 from prd)),
+
+  -- 최근 엔트리
+  'recent_summaries', (select arr from lastn_json),
+  'recent_count',   coalesce((select total_cnt from cnt), 0),
+  'has_recent',     coalesce(((select total_cnt from cnt) > 0), false)
+);
+$$;
+
+
+
+
+
+-- 엔트리 생성 + 회차 차감 + submission_state 링크 (원샷/멱등, entry_no 제거, UUID 스키마 반영)
+create or replace function upsert_entry_decrement_and_link(
+  p_sid            text,
+  p_user_pass_id   uuid,
+  p_entry          jsonb,
+  p_ip             inet  default null,   -- 필요 시 로그용으로만 받고 사용 안 함
+  p_user_agent     text  default null    -- 필요 시 로그용으로만 받고 사용 안 함
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_now         timestamptz := now();
+  v_state       text;
+  v_linked_id   uuid;
+  v_user_id     uuid;
+  v_remaining   int;
+  v_entry_id    uuid;
+  v_std_id      uuid;   -- standard_emotion_id(UUID) 안전 캐스팅용
+begin
+  -- 0) 필수 파라미터
   if p_sid is null or p_user_pass_id is null then
     return jsonb_build_object('status','error','reason','missing_sid_or_pass');
   end if;
 
-  -- 1) 이미 링크된 경우(멱등 스킵)
-  select emotion_entry_id into v_existing_entry
+  -- 1) submission_state 잠금 + 멱등/상태 확인
+  select submit_status, emotion_entry_id
+    into v_state, v_linked_id
   from submission_state
-  where sid = p_sid;
+  where sid = p_sid
+  for update;
 
-  if v_existing_entry is not null then
-    return jsonb_build_object('status','skipped','entry_id', v_existing_entry);
+  if v_state is null then
+    return jsonb_build_object('status','error','reason','sid_not_found');
   end if;
 
-  -- 2) user_id 해석(트리거 없이 로직으로 보장)
-  select user_id into v_user_id
-  from user_passes
-  where id = p_user_pass_id
-  for share;
+  if v_linked_id is not null then
+    return jsonb_build_object('status','skipped','entry_id', v_linked_id);
+  end if;
+
+  if v_state <> 'ready' then
+    return jsonb_build_object('status','error','reason','bad_state');
+  end if;
+
+  -- 2) 패스 잠금 + 잔여 회차 로딩 (SELECT 1회)
+  select up.user_id, coalesce(up.remaining_uses,0)
+    into v_user_id, v_remaining
+  from user_passes up
+  where up.id = p_user_pass_id
+  for update;
 
   if v_user_id is null then
     return jsonb_build_object('status','error','reason','user_id_null');
   end if;
+  if v_remaining <= 0 then
+    return jsonb_build_object('status','error','reason','no_remaining');
+  end if;
 
-  -- 3) 필수 필드 검증(원문 3종 + 라벨 3종)
-  if coalesce(p_entry->>'raw_emotion','') = '' or
-     coalesce(p_entry->>'situation_raw','') = '' or
-     coalesce(p_entry->>'journal_raw','') = '' or
-     coalesce(p_entry#>>'{labels,level}','') = '' or
+  -- 3) 필수 입력(원문 3종 + 라벨 3종) 확인
+  if coalesce(p_entry->>'raw_emotion','')      = '' or
+     coalesce(p_entry->>'situation_raw','')    = '' or
+     coalesce(p_entry->>'journal_raw','')      = '' or
+     coalesce(p_entry#>>'{labels,level}','')   = '' or
      coalesce(p_entry#>>'{labels,feedback_type}','') = '' or
-     coalesce(p_entry#>>'{labels,speech}','') = '' then
+     coalesce(p_entry#>>'{labels,speech}','')  = '' then
     return jsonb_build_object('status','error','reason','missing_required_fields');
   end if;
 
-  -- 4) 엔트리 INSERT
-  insert into emotion_entries (
-    user_pass_id, 
-    user_id,
+  -- 3.5) standard_emotion_id(UUID) 안전 캐스팅
+  if (p_entry ? 'standard_emotion_id')
+     and jsonb_typeof(p_entry->'standard_emotion_id') = 'string'
+     and nullif(p_entry->>'standard_emotion_id','') is not null then
+    v_std_id := (p_entry->>'standard_emotion_id')::uuid;
+  else
+    v_std_id := null;
+  end if;
+
+  -- 4) INSERT (스키마에 맞춤: ip/user_agent 없음)
+  insert into emotion_entries(
+    id,
+    user_pass_id, user_id,
     raw_emotion_text,
     supposed_emotion_text,
     standard_emotion_id,
@@ -725,50 +695,51 @@ begin
     journal_raw_text,   journal_summary_text,
     emotion_level_label_snapshot,
     feedback_type_label_snapshot,
-    feedback_speech_label_snapshot
+    feedback_speech_label_snapshot,
+    is_feedback_generated,
+    created_at
   ) values (
+    gen_random_uuid(),
     p_user_pass_id, v_user_id,
     p_entry->>'raw_emotion',
     nullif(p_entry->>'supposed_emotion',''),
-    nullif((p_entry->>'standard_emotion_id')::uuid, null),
+    v_std_id,
     nullif(p_entry->>'standard_emotion_reasoning',''),
     p_entry->>'situation_raw', nullif(p_entry->>'situation_summary',''),
     p_entry->>'journal_raw',   nullif(p_entry->>'journal_summary',''),
     p_entry#>>'{labels,level}',
     p_entry#>>'{labels,feedback_type}',
-    p_entry#>>'{labels,speech}'
+    p_entry#>>'{labels,speech}',
+    false,
+    v_now   -- created_at은 default now()지만, 명시해도 무방
   )
   returning id into v_entry_id;
 
-  -- 5) submissions 링크 + 로그
+  -- 5) 회차 차감 + 최초 사용 시각
+  update user_passes
+     set remaining_uses = v_remaining - 1,
+         first_used_at  = coalesce(first_used_at, v_now),
+         updated_at     = v_now
+   where id = p_user_pass_id;
+
+  -- 6) submissions 링크 + 로그(캡)
   update submission_state
      set emotion_entry_id = v_entry_id,
          status_log = concat_ws(
-           ' | ',
-           nullif(status_log,''),
-           format('entry_linked=%s ts=%s', v_entry_id, to_char(v_now,'YYYY-MM-DD HH24:MI:SS'))
+           ' | ', nullif(status_log,''),
+           format('entry_linked=%s ts=%s',
+                  v_entry_id, to_char(v_now,'YYYY-MM-DD HH24:MI:SS'))
          ),
          updated_at = v_now
    where sid = p_sid;
 
-  -- 6) 로그 길이 캡(선택)
   update submission_state
      set status_log = right(status_log, 4000)
    where sid = p_sid;
 
-  return jsonb_build_object('status','ok','entry_id', v_entry_id);
+  return jsonb_build_object(
+    'status','ok',
+    'entry_id', v_entry_id,
+    'remaining_uses_after', v_remaining - 1
+  );
 end $$;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
