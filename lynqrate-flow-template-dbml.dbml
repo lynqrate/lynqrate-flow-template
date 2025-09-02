@@ -38,6 +38,7 @@ Table user_passes {
   created_at timestamptz [not null, default: `now()`]
   is_active boolean [not null, default: true]
   prev_pass_id uuid [null, ref:> user_passes.id, note:'이전 이용권(같은 사용자). onDelete: restrict']
+  updated_at timestamptz [null, default: `now()`, note: '마지막 수정 시각 (함수/쿼리에서 직접 now() 세팅)']
   note:'이용권 구매 기록. User:Pass = M:N 구조를 해결하는 중간 테이블'
 } 
 
@@ -64,6 +65,8 @@ Table emotion_entries{
   journal_summary_text text [null]
   created_at timestamptz [not null, default: `now()`]
   is_feedback_generated boolean [default: false]
+  status text [not null, default: 'pending', note: 'pending, ready, error']
+  error_reason text [null]
   emotion_level_label_snapshot text [not null]
   feedback_type_label_snapshot text [not null]
   feedback_speech_label_snapshot text [not null]

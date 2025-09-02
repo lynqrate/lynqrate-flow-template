@@ -510,6 +510,19 @@ begin
          updated_at = v_now
    where sid = p_sid;
 
+   -- seed 결과도 히스토리에 기록
+  insert into submission_history(
+    user_pass_id, uuid_code, result_status, result_reason,
+    ip, user_agent, latency_ms, created_at
+  )
+  values (
+    p_user_pass_id,
+    p_uuid_code,
+    case when v_status = 'error' then 'fail' else 'pass' end,
+    v_reason,
+    p_ip, p_user_agent, p_latency_ms, v_now
+  );
+
   return jsonb_build_object(
     'status', v_status,
     'seed_source', v_seed_source,
