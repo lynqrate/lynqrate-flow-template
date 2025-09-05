@@ -28,7 +28,7 @@ Table user_passes {
   user_id uuid [null, ref:> users.id, note:'onDelete: restrict']
   pass_id uuid [not null, ref:> passes.id, note:'restrict']
   remaining_uses int [not null, note:'잔여 회차']
-  purchased_at timestamptz [not null]
+  purchased_at timestamptz [null]
   expires_at timestamptz [not null, note:'구매일 기준 30일 후 만료']
   uuid_code text [not null, unique, note:'이용권 인증 코드']
   first_used_at timestamptz [null, note:'이 이용권이 처음 사용된 시간 (예: 감정 분석 요청됨)']
@@ -83,6 +83,7 @@ Table emotion_feedbacks{
   temperature float [not null]
   token_count int [not null]
   created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
   note:'GPT 피드백 결과'
 }
 
