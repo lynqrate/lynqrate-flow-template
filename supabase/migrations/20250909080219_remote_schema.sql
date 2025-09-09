@@ -1,130 +1,83 @@
-CREATE OR REPLACE FUNCTION public.append_submission_log(p_sid text, p_msg text)
- RETURNS void
- LANGUAGE plpgsql
- SECURITY DEFINER
- SET search_path TO 'public'
-AS $function$
-declare
-  v_now text := to_char(now(),'YYYY-MM-DD HH24:MI:SS');
-  v_line text := format('%s ts=%s', p_msg, v_now);
-begin
-  update public.submission_state
-   set status_log = right(
-                      case when coalesce(status_log,'') = '' then v_line
-                           else status_log || ' | ' || v_line end,
-                      4000),
-       updated_at = now()
-  where sid = p_sid;
-end;
-$function$
+drop policy "Service insert emotion_feedbacks" on "public"."emotion_feedbacks";
+
+drop policy "Delete own user_passes" on "public"."user_passes";
+
+drop policy "Insert own user_passes" on "public"."user_passes";
+
+drop policy "Select own user_passes" on "public"."user_passes";
+
+drop policy "Update own user_passes" on "public"."user_passes";
+
+alter table "public"."analysis_requests" drop constraint "analysis_requests_token_used_check";
+
+drop function if exists "public"."ingest_entry_and_rollup"(p_sid text, p_user_pass_id uuid, p_user_id uuid, p_entry jsonb, p_new_digest text, p_ip inet, p_user_agent text);
+
+drop function if exists "public"."save_feedback_and_finish"(p_entry_id uuid, p_sid text, p_feedback_text text, p_gpt_model_used text, p_temperature double precision, p_token_count integer, p_language text);
 
 
-CREATE OR REPLACE FUNCTION public.clean_visible_text(p_text text)
- RETURNS text
- LANGUAGE sql
- IMMUTABLE
- set search_path = pg_catalog
-AS $function$
-  select
-    trim(  -- 앞/뒤 공백, 탭, 개행 정리
-      regexp_replace(
-        regexp_replace(
-          coalesce(p_text,''),
-          E'[\\u200B\\u200C\\u200D\\uFEFF]',  -- 제로폭/ BOM 제거
-          '', 'g'
-        ),
-        E'\\u00A0',                           -- NBSP → 일반 공백
-        ' ', 'g'
-      )
-    )
-$function$
+  create table "public"."ai_task_runs" (
+    "id" uuid not null default gen_random_uuid(),
+    "emotion_entry_id" uuid,
+    "task_type" text not null,
+    "provider" text not null default 'openai'::text,
+    "model" text not null,
+    "request_id" text,
+    "prompt_tokens" integer not null,
+    "completion_tokens" integer not null,
+    "total_tokens" integer generated always as ((prompt_tokens + completion_tokens)) stored,
+    "temperature" numeric(3,2),
+    "status" text not null default 'ok'::text,
+    "error_code" text,
+    "prompt_version" text,
+    "created_at" timestamp with time zone not null default now(),
+    "updated_at" timestamp with time zone not null default now()
+      );
 
 
-CREATE OR REPLACE FUNCTION public.get_rollup_context(p_user_pass_id uuid, p_limit integer DEFAULT 5)
- RETURNS jsonb
- LANGUAGE sql
- STABLE
- SET search_path TO 'public'
-AS $function$
-with pass_info as (
-  -- 패스 메타 정보 (진행도 계산용)
-  select
-    up.user_id,
-    coalesce(up.remaining_uses, 0) as remaining_uses,    -- NULL일 경우 0으로
-    p.total_uses,
-    -- 다음 엔트리 번호 (최소 1, 최대 total_uses 범위로 보정)
-    greatest(1, least(p.total_uses,
-      (p.total_uses - coalesce(up.remaining_uses, 0) + 1)
-    )) as entry_no_next
-  from user_passes up
-  join passes p on p.id = up.pass_id
-  where up.id = p_user_pass_id
-),
-prd as (
-  -- 롤업 요약(digest)
-  select
-    coalesce(digest_text, '') as digest_text,      -- NULL일 경우 빈 문자열
-    coalesce(last_entry_no, 0) as last_entry_no    -- NULL일 경우 0
-  from pass_rollup_digests
-  where user_pass_id = p_user_pass_id
-),
-cnt as (
-  -- 전체 엔트리 개수
-  select count(*)::int as total_cnt
-  from emotion_entries
-  where user_pass_id = p_user_pass_id
-),
-lastn as (
-  -- 최근 N개의 엔트리 요약 (표준 감정명까지 조인)
-  select
-    e.id,
-    e.situation_summary_text,
-    e.journal_summary_text,
-    e.created_at,
-    e.standard_emotion_id,
-    se.name as standard_emotion_name
-  from emotion_entries e
-  left join standard_emotions se on se.id = e.standard_emotion_id
-  where e.user_pass_id = p_user_pass_id
-  order by e.created_at desc
-  limit p_limit
-),
-lastn_json as (
-  -- 최근 N개를 JSON 배열로 변환 (없으면 [] 반환)
-  select coalesce(
-           (select jsonb_agg(to_jsonb(lastn) order by lastn.created_at desc) from lastn),
-           '[]'::jsonb
-         ) as arr
-)
--- 최종 JSON 반환
-select jsonb_build_object(
-  -- 진행도 관련
-  'user_id',        (select user_id from pass_info),
-  'remaining_uses', (select remaining_uses from pass_info),
-  'total_uses',     (select total_uses     from pass_info),
-  'entry_no_next',  (select entry_no_next  from pass_info),
+alter table "public"."ai_task_runs" enable row level security;
 
-  -- 요약(digest)
-  'digest',         (select digest_text   from prd),
-  'last_entry_no',  (select last_entry_no from prd),
-  'digest_len',     coalesce(length((select digest_text from prd)), 0),
-  'has_digest',     (select exists(select 1 from prd)),
+alter table "public"."analysis_requests" drop column "model";
 
-  -- 최근 엔트리
-  'recent_summaries', (select arr from lastn_json),
-  'recent_count',   coalesce((select total_cnt from cnt), 0),
-  'has_recent',     coalesce(((select total_cnt from cnt) > 0), false)
-);
-$function$
+alter table "public"."analysis_requests" drop column "token_used";
 
+alter table "public"."emotion_entries" add column "journal_raw_length" integer generated always as (char_length(COALESCE(journal_raw_text, ''::text))) stored;
+
+alter table "public"."emotion_entries" add column "situation_raw_length" integer generated always as (char_length(COALESCE(situation_raw_text, ''::text))) stored;
+
+alter table "public"."emotion_feedbacks" drop column "gpt_model_used";
+
+alter table "public"."emotion_feedbacks" drop column "temperature";
+
+alter table "public"."emotion_feedbacks" drop column "token_count";
+
+CREATE UNIQUE INDEX ai_task_runs_pkey ON public.ai_task_runs USING btree (id);
+
+CREATE INDEX idx_ai_task_runs_entry ON public.ai_task_runs USING btree (emotion_entry_id, created_at DESC);
+
+CREATE INDEX idx_ai_task_runs_task ON public.ai_task_runs USING btree (task_type, created_at DESC);
+
+CREATE INDEX idx_users_email_pending_guest ON public.users USING btree (email_pending) WHERE (is_guest = true);
+
+CREATE INDEX idx_users_email_verified ON public.users USING btree (email_verified);
+
+alter table "public"."ai_task_runs" add constraint "ai_task_runs_pkey" PRIMARY KEY using index "ai_task_runs_pkey";
+
+alter table "public"."ai_task_runs" add constraint "ai_task_runs_emotion_entry_id_fkey" FOREIGN KEY (emotion_entry_id) REFERENCES emotion_entries(id) ON DELETE SET NULL not valid;
+
+alter table "public"."ai_task_runs" validate constraint "ai_task_runs_emotion_entry_id_fkey";
+
+alter table "public"."ai_task_runs" add constraint "ai_task_runs_task_type_check" CHECK ((task_type = ANY (ARRAY['classify_standard_emotion'::text, 'summarize_situation_and_journal'::text, 'rolling_digest'::text, 'feedback'::text]))) not valid;
+
+alter table "public"."ai_task_runs" validate constraint "ai_task_runs_task_type_check";
+
+set check_function_bodies = off;
 
 CREATE OR REPLACE FUNCTION public.ingest_entry_and_rollup(p_sid text, p_user_pass_id uuid, p_user_id uuid, p_entry jsonb, p_gpt_responses jsonb, p_new_digest text, p_ip inet DEFAULT NULL::inet, p_user_agent text DEFAULT NULL::text)
  RETURNS jsonb
  LANGUAGE plpgsql
  SECURITY DEFINER
  SET search_path TO 'public'
-AS $function$
-declare
+AS $function$declare
   v_now           timestamptz := now();
   v_state         text;
   v_linked_id     uuid;
@@ -312,334 +265,32 @@ begin
   );
 
   return jsonb_build_object('status','ok','entry_id', v_entry_id);
-end;
-$function$
+end;$function$
+;
 
-
-CREATE OR REPLACE FUNCTION public.init_validate_and_attach_user(p_sid text, p_uuid_code text, p_required jsonb, p_email text DEFAULT NULL::text, p_ip inet DEFAULT NULL::inet, p_user_agent text DEFAULT NULL::text, p_latency_ms integer DEFAULT NULL::integer)
- RETURNS jsonb
- LANGUAGE plpgsql
+CREATE OR REPLACE FUNCTION public.log_ai_task_run(p_entry_id uuid, p_task_type text, p_model text DEFAULT NULL::text, p_request_id text DEFAULT NULL::text, p_prompt_tokens integer DEFAULT 0, p_completion_tokens integer DEFAULT 0, p_temperature numeric DEFAULT NULL::numeric, p_status text DEFAULT 'ok'::text, p_error_code text DEFAULT NULL::text, p_prompt_version text DEFAULT NULL::text)
+ RETURNS void
+ LANGUAGE sql
  SECURITY DEFINER
  SET search_path TO 'public'
-AS $function$declare
-  v_now timestamptz := now();
-  v_pass record;
-  v_reason text := null;
-  v_missing_key text;
-  v_norm text;
-  v_user_id uuid;
-  v_history_id  bigint;
-begin
-  -- pending 업서트
-  insert into submission_state(sid, uuid_code, submit_status, status_reason, updated_at)
-  values (p_sid, p_uuid_code, 'pending', 'received', v_now)
-  on conflict (sid) do update
-    set uuid_code     = excluded.uuid_code,
-        submit_status = 'pending',
-        status_reason = 'received',
-        updated_at    = v_now;
-
-  -- 필수값 비어있음 체크
-  select key into v_missing_key
-  from jsonb_each_text(p_required)
-  where normalize_whitespace(value) = ''
-  limit 1;
-
-  if v_missing_key is not null then
-    v_reason := 'missing_field_'||v_missing_key;
-  end if;
-
-  -- pass 유효성 + 잠금
-  if v_reason is null then
-    select up.* into v_pass
-    from user_passes up
-    where up.uuid_code = p_uuid_code
-    for update;
-
-    if v_pass is null then
-      v_reason := 'not_found';
-    elsif v_pass.is_active is not true then
-      v_reason := 'inactive';
-    elsif v_pass.expires_at is not null and v_pass.expires_at <= v_now then
-      v_reason := 'expired';
-    elsif coalesce(v_pass.remaining_uses,0) <= 0 then
-      v_reason := 'no_uses';
-    end if;
-  end if;
-
-  -- 이메일 정규화/검증
-  if v_reason is null and coalesce(btrim(p_email),'') <> '' then
-    v_norm := normalize_and_validate_email(p_email);
-    if v_norm is null then
-      v_reason := 'invalid_email';
-    else
-      p_email := v_norm;
-    end if;
-  end if;
-
-  -- 실패 공용 처리
-  if v_reason is not null then
-    update submission_state
-       set user_pass_id = case when v_pass is null then null else v_pass.id end,
-           uuid_code = p_uuid_code,
-           submit_status = 'fail',
-           status_reason = v_reason,
-           updated_at    = v_now
-     where sid = p_sid;
-
-    perform public.append_submission_log(p_sid, format('init fail reason=%s', v_reason));
-
-    insert into submission_history(
-      user_pass_id, uuid_code, result_status, result_reason,
-      ip, user_agent, latency_ms, created_at, updated_at
-    )
-    values (
-      case when v_pass is null then null else v_pass.id end,
-      p_uuid_code, 'fail', v_reason,
-      p_ip, p_user_agent, p_latency_ms, v_now, v_now
-    )
-    returning id into v_history_id;
-
-    return jsonb_build_object(
-      'status','fail',
-      'reason', v_reason,
-      'history_id', v_history_id  -- ★ 다음 단계에서 업데이트용
-    );
-  end if;
-
-  -- 사용자 매핑(UPSERT 스타일)
-  if v_pass.user_id is null then
-    -- 1) 이메일로 사용자 우선 탐색
-    if p_email is not null and btrim(p_email) <> '' then
-      select id into v_user_id
-      from users
-      where email_verified = p_email
-      order by updated_at desc
-      limit 1;
-
-      -- 2) 없으면 pending 으로 생성/재사용
-      if v_user_id is null then
-        select id into v_user_id
-        from users
-        where is_guest = true
-          and email_pending = p_email
-        order by updated_at desc
-        limit 1;
-      end if;
-    end if;
-
-    -- 3) 그래도 없으면 새 guest 생성
-    if v_user_id is null then
-      insert into users(is_guest, email_pending)
-      values (true, case when coalesce(btrim(p_email),'') <> '' then p_email else null end)
-      returning id into v_user_id;
-    end if;
-
-    update user_passes
-       set user_id = v_user_id
-     where uuid_code = p_uuid_code
-       and user_id is null;
-
-    v_pass.user_id := v_user_id;
-  else
-    v_user_id := v_pass.user_id;
-    insert into users (id, is_guest, email_pending, updated_at)
-    values (v_user_id, true, nullif(p_email,''), v_now)
-    on conflict (id) do update
-      set email_pending = coalesce(excluded.email_pending, users.email_pending),
-          updated_at    = v_now;
-  end if;
-
-  -- prev_pass_id 세팅 (같은 user + 같은 pass_id에서 가장 최근 과거 1건)
-  update public.user_passes cur
-     set prev_pass_id = sub.prev_id,
-         updated_at   = v_now
-    from (
-      select up.id as prev_id
-      from public.user_passes up
-      where up.user_id = v_user_id
-        and up.id <> v_pass.id
-        and up.pass_id = v_pass.pass_id
-        and up.purchased_at <= v_pass.purchased_at
-      order by up.purchased_at desc, up.created_at desc
-      limit 1
-    ) sub
-   where cur.id = v_pass.id
-     and (cur.prev_pass_id is distinct from sub.prev_id);
-
-  perform public.append_submission_log(
-    p_sid,
-    format('prev_linked=%s', coalesce((select prev_pass_id::text from public.user_passes where id=v_pass.id), '-'))
-  );
-
-  -- 성공 히스토리(이 시점의 검증 성공 기록)
-  insert into submission_history(
-    user_pass_id, uuid_code, result_status, result_reason,
-    ip, user_agent, latency_ms, created_at, updated_at
+AS $function$
+  insert into ai_task_runs(
+    emotion_entry_id, task_type, provider, model,
+    request_id, prompt_tokens, completion_tokens, temperature, 
+    status, error_code, prompt_version
   )
   values (
-    v_pass.id, p_uuid_code, 'pass', 'ok',
-    p_ip, p_user_agent, p_latency_ms, v_now, v_now
-  )
-  returning id into v_history_id;  -- ★ 이 id로 나중에 GPT 실패 업데이트
-
-  -- submission_state: ready 전환
-  update submission_state
-     set user_pass_id = v_pass.id,
-         uuid_code    = p_uuid_code,
-         submit_status= 'ready',
-         status_reason= 'validation_success',
-         updated_at   = v_now
-   where sid = p_sid;
-
-  perform public.append_submission_log(p_sid, 'init ok');
-
-  return jsonb_build_object(
-    'status','ok',
-    'history_id', v_history_id,
-    'user_pass_id', v_pass.id,
-    'user_id', v_user_id,
-    'uuid_code', p_uuid_code,
-    'remaining_uses', v_pass.remaining_uses,
-    'expires_at', v_pass.expires_at,
-    'is_active', v_pass.is_active,
-    'normalized_email', nullif(p_email,''),
-    'normalized_emotion', normalize_whitespace(p_required->>'raw_emotion'),
-    'situation_trimmed',  clean_visible_text(p_required->>'situation_raw'),
-    'journal_trimmed',    clean_visible_text(p_required->>'journal_raw')
+    p_entry_id, p_task_type, 'openai', nullif(p_model,''),
+    p_request_id, greatest(coalesce(p_prompt_tokens,0),0),
+    greatest(coalesce(p_completion_tokens,0),0), p_temperature,
+    coalesce(p_status,'ok'),
+    nullif(p_error_code,''),
+    nullif(p_prompt_version,'')
   );
-end;$function$
-
-
-
-CREATE OR REPLACE FUNCTION public.mark_submission_fail(p_sid text, p_reason text, p_history_id bigint DEFAULT NULL::bigint, p_error_json jsonb DEFAULT NULL::jsonb, p_ip inet DEFAULT NULL::inet, p_user_agent text DEFAULT NULL::text, p_latency_ms integer DEFAULT NULL::integer, p_emotion_entry_id uuid DEFAULT NULL::uuid)
- RETURNS void
- LANGUAGE plpgsql
- SECURITY DEFINER
- set search_path = public
-AS $function$declare
-  v_now       timestamptz := now();
-  v_user_pass uuid;
-  v_uuid_code text;
-begin
-  -- 1) 현재 상태를 fail로 동기화
-  update submission_state s
-     set submit_status = 'fail',
-         status_reason = p_reason,
-         updated_at    = v_now
-   where s.sid = p_sid;
-
-  -- 2) 상태 로깅(선택 함수가 있다면)
-  perform public.append_submission_log(p_sid, format('fail reason=%s', p_reason));
-
-  -- 3) 보조 데이터 확보(새 히스토리 행 생성 시 사용)
-  select s.user_pass_id, s.uuid_code
-    into v_user_pass, v_uuid_code
-  from submission_state s
-  where s.sid = p_sid;
-
-  -- 4) 히스토리 갱신
-  if p_history_id is not null then
-    -- 같은 행을 업데이트하여 "검증 OK → GPT 단계 error"로 승격
-    update submission_history
-       set result_status    = 'error',        -- 체크 제약: ('pass','fail','error')
-           result_reason    = p_reason,
-           emotion_entry_id = coalesce(p_emotion_entry_id, emotion_entry_id),
-           updated_at       = v_now,
-           error_json       = p_error_json
-     where id = p_history_id;
-  else
-    -- init 단계에서 history_id를 못 받았거나 유실된 경우: 새 행을 남겨 복원
-    insert into submission_history(
-      user_pass_id, emotion_entry_id, uuid_code,
-      result_status, result_reason, ip, user_agent, latency_ms, created_at, updated_at, error_json
-    )
-    values (
-      v_user_pass, p_emotion_entry_id, v_uuid_code,
-      'error', p_reason, p_ip, p_user_agent, p_latency_ms, v_now, v_now, p_error_json
-    );
-  end if;
-end;$function$
-
-
-CREATE OR REPLACE FUNCTION public.normalize_and_validate_email(p_email text)
- RETURNS text
- LANGUAGE plpgsql
- immutable
-set search_path = pg_catalog
-AS $function$
-declare
-  v_email  text := lower(btrim(p_email));
-  v_local  text;
-  v_domain text;
-begin
-  if v_email is null or v_email = '' then
-    return null; -- 빈 입력은 상위 로직에서 허용/불허 결정
-  end if;
-
-  -- 숨은 공백/제로폭/비정상 문자 빠르게 차단
-  if v_email ~ '[\s\u00A0\u200B\uFEFF<>\(\)\{\}\[\];:"''\\|,`]' then
-    return null;
-  end if;
-
-  -- 기본 포맷
-  if v_email !~ '^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$' then
-    return null;
-  end if;
-
-  v_local  := split_part(v_email, '@', 1);
-  v_domain := split_part(v_email, '@', 2);
-
-  -- 길이 제한
-  if length(v_email) > 320 or length(v_local) > 64 or length(v_domain) > 255 then
-    return null;
-  end if;
-
-  -- 로컬파트 규칙
-  if v_local like '.%' or v_local like '%.'
-     or v_local like '%..%' then
-    return null;
-  end if;
-
-  -- 도메인 규칙
-  if v_domain like '-%' or v_domain like '%-' or v_domain like '%..%' then
-    return null;
-  end if;
-
-  -- ① 플러스 제거(모든 도메인)
-  if position('+' in v_local) > 0 then
-    v_local := split_part(v_local, '+', 1);
-  end if;
-
-  -- ② Gmail 점 제거(도메인 한정)
-  if v_domain in ('gmail.com','googlemail.com') then
-    v_local := replace(v_local, '.', '');
-  end if;
-
-  return v_local || '@' || v_domain;
-end;
 $function$
+;
 
-
-CREATE OR REPLACE FUNCTION public.normalize_whitespace(p_text text)
- RETURNS text
- LANGUAGE sql
- IMMUTABLE
- set search_path = pg_catalog, public
-AS $function$
-  select regexp_replace(
-           regexp_replace(
-             coalesce(p_text,''), 
-             E'[\\u00A0\\u200B\\uFEFF]', -- non-breaking space, zero-width, BOM
-             '', 'g'
-           ),
-           E'[\\s]+',  -- 일반 공백, 탭, 엔터 포함
-           '', 'g'
-         );
-$function$
-
-
-CREATE OR REPLACE FUNCTION public.save_feedback_and_finish(p_entry_id uuid, p_sid text, p_feedback_text text, p_language text DEFAULT 'ko'::text, p_gpt_responses jsonb)
+CREATE OR REPLACE FUNCTION public.save_feedback_and_finish(p_entry_id uuid, p_sid text, p_feedback_text text, p_gpt_responses jsonb, p_language text DEFAULT 'ko'::text)
  RETURNS TABLE(entry_id uuid, feedback_id uuid, sid text, state_after text, remaining_uses_after integer, updated_at timestamp with time zone)
  LANGUAGE plpgsql
  SECURITY DEFINER
@@ -786,7 +437,28 @@ begin
   updated_at := v_now;
   return next;
 end;$function$
+;
 
+CREATE OR REPLACE FUNCTION public.append_submission_log(p_sid text, p_msg text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_now text := to_char(now(),'YYYY-MM-DD HH24:MI:SS');
+  v_line text := format('%s ts=%s', p_msg, v_now);
+begin
+  update public.submission_state
+   set status_log = right(
+                      case when coalesce(status_log,'') = '' then v_line
+                           else status_log || ' | ' || v_line end,
+                      4000),
+       updated_at = now()
+  where sid = p_sid;
+end;
+$function$
+;
 
 CREATE OR REPLACE FUNCTION public.seed_and_record_submission(p_sid text, p_uuid_code text, p_user_pass_id uuid, p_user_id uuid, p_reason text, p_ip inet DEFAULT NULL::inet, p_user_agent text DEFAULT NULL::text, p_latency_ms integer DEFAULT NULL::integer)
  RETURNS jsonb
@@ -873,41 +545,48 @@ begin
     'seed_len', coalesce(length(v_seed),0)
   );
 end;$function$
+;
 
+grant delete on table "public"."ai_task_runs" to "anon";
 
+grant insert on table "public"."ai_task_runs" to "anon";
 
+grant references on table "public"."ai_task_runs" to "anon";
 
+grant select on table "public"."ai_task_runs" to "anon";
 
--- ai_task_runs에 기록하는 유틸
-create or replace function public.log_ai_task_run(
-  p_entry_id uuid,
-  p_task_type text,
-  p_model text default null,
-  p_request_id text default null,
-  p_prompt_tokens int default 0,
-  p_completion_tokens int default 0,
-  p_temperature numeric(3,2) default null,
-  p_status text default 'ok',
-  p_error_code text default null,
-  p_prompt_version text default null
-)
-returns void
-language sql
-security definer
-set search_path = public
-as $$
-  insert into ai_task_runs(
-    emotion_entry_id, task_type, provider, model,
-    request_id, prompt_tokens, completion_tokens, temperature, 
-    status, error_code, prompt_version
-  )
-  values (
-    p_entry_id, p_task_type, 'openai', nullif(p_model,''),
-    p_request_id, greatest(coalesce(p_prompt_tokens,0),0),
-    greatest(coalesce(p_completion_tokens,0),0), p_temperature,
-    coalesce(p_status,'ok'),
-    nullif(p_error_code,''),
-    nullif(p_prompt_version,'')
-  );
-$$;
+grant trigger on table "public"."ai_task_runs" to "anon";
+
+grant truncate on table "public"."ai_task_runs" to "anon";
+
+grant update on table "public"."ai_task_runs" to "anon";
+
+grant delete on table "public"."ai_task_runs" to "authenticated";
+
+grant insert on table "public"."ai_task_runs" to "authenticated";
+
+grant references on table "public"."ai_task_runs" to "authenticated";
+
+grant select on table "public"."ai_task_runs" to "authenticated";
+
+grant trigger on table "public"."ai_task_runs" to "authenticated";
+
+grant truncate on table "public"."ai_task_runs" to "authenticated";
+
+grant update on table "public"."ai_task_runs" to "authenticated";
+
+grant delete on table "public"."ai_task_runs" to "service_role";
+
+grant insert on table "public"."ai_task_runs" to "service_role";
+
+grant references on table "public"."ai_task_runs" to "service_role";
+
+grant select on table "public"."ai_task_runs" to "service_role";
+
+grant trigger on table "public"."ai_task_runs" to "service_role";
+
+grant truncate on table "public"."ai_task_runs" to "service_role";
+
+grant update on table "public"."ai_task_runs" to "service_role";
+
 
