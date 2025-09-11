@@ -71,7 +71,9 @@ Table emotion_entries{
   feedback_type_label_snapshot text [not null]
   feedback_speech_label_snapshot text [not null]
   feedback_generated_at timestamptz [null]
-
+  situation_raw_length int [null]
+  journal_raw_length int [null]
+  rollup_digest_snapshot text [null]
   note:'감정 분석 요청 및 결과 저장'
 }
 
@@ -164,11 +166,11 @@ Table ai_task_runs {
   task_type         text        [not null, note: 'see Enum ai_task_task_type']
   provider          text        [not null, default: 'openai']
   model             text        [not null]
-  request_id        text
-  prompt_tokens     int         [not null]
-  completion_tokens int         [not null]
-  total_tokens      int         [note: 'GENERATED ALWAYS AS (prompt_tokens + completion_tokens) STORED']
-  temperature       numeric(3,2)
+  request_id        text        [null]
+  prompt_tokens     int         [null]
+  completion_tokens int         [null]
+  total_tokens      int         [null, note: 'GENERATED ALWAYS AS (prompt_tokens + completion_tokens) STORED']
+  temperature       numeric(3,2) [null]
   status            text        [not null, default: 'ok']
   error_code        text
   prompt_version    text
