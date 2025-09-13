@@ -1,5 +1,7 @@
 drop extension if exists "pg_net";
 
+create extension if not exists pgcrypto;
+
 create sequence "public"."submission_history_id_seq";
 
 
@@ -161,7 +163,12 @@ alter table "public"."submission_state" enable row level security;
     "remaining_uses" integer not null,
     "purchased_at" timestamp with time zone not null,
     "expires_at" timestamp with time zone,
-    "uuid_code" text not null default lower(((((((encode(gen_random_bytes(2), 'hex'::text) || '-'::text) || encode(gen_random_bytes(2), 'hex'::text)) || '-'::text) || encode(gen_random_bytes(2), 'hex'::text)) || '-'::text) || encode(gen_random_bytes(2), 'hex'::text))),
+    "uuid_code" text not null default lower(
+  encode(extensions.gen_random_bytes(2), 'hex') || '-' ||
+  encode(extensions.gen_random_bytes(2), 'hex') || '-' ||
+  encode(extensions.gen_random_bytes(2), 'hex') || '-' ||
+  encode(extensions.gen_random_bytes(2), 'hex')
+),        
     "first_used_at" timestamp with time zone,
     "source" text not null default '''kmong''::text'::text,
     "source_order_id" text,
