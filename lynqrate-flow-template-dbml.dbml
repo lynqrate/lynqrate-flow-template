@@ -158,6 +158,7 @@ Enum ai_task_task_type {
   summarize_situation_and_journal
   rolling_digest
   feedback
+  carryover_digest
 }
 
 Enum ai_task_summarize_mode {
