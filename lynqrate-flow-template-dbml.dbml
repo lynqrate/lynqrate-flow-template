@@ -20,6 +20,7 @@ Table passes {
   is_active boolean [not null, default: true]
   expires_after_days int [null, note:'만료일 계산용']
   created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
   note:'이용권 종류'
 }
 
@@ -48,6 +49,8 @@ Table standard_emotions {
   description text [null]
   soft_order int [not null]
   color_code text [not null]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
   note:'표준 감정 정의'
 }
 
@@ -74,6 +77,7 @@ Table emotion_entries{
   situation_raw_length int [null]
   journal_raw_length int [null]
   rollup_digest_snapshot text [null]
+  updated_at timestamptz [not null, default: `now()`]
   note:'감정 분석 요청 및 결과 저장'
 }
 
@@ -83,6 +87,7 @@ Table emotion_feedbacks{
   feedback_text text [not null]
   language text [not null]
   created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
   note:'GPT 피드백 결과'
 }
 
@@ -190,4 +195,17 @@ Table ai_task_runs {
     (emotion_entry_id, created_at) [name: 'idx_ai_task_runs_entry']
     (task_type, created_at)        [name: 'idx_ai_task_runs_task']
   }
+}
+
+able rpc_debug_log {
+  id           bigint        [pk, not null, note: 'default nextval(public.rpc_debug_log_id_seq)']
+  ts           timestamptz   [not null, default: `now()`]
+  func         text          [not null]
+  phase        text
+  entry_id     uuid
+  user_pass_id uuid
+  msg          text
+  data         jsonb
+
+  Note: 'Debug log table. Primary key on id. RLS is enabled.'
 }
