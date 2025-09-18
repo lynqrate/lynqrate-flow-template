@@ -208,8 +208,8 @@ begin
     v_roll jsonb;
   begin
     -- 키가 없거나 null일 수 있으니 안전하게 꺼냄
-    v_cls  := case when p_gpt_responses ? 'emotion_standadization'
-                    then p_gpt_responses->'emotion_standadization' else null end;
+    v_cls  := case when p_gpt_responses ? 'emotion_standardization'
+                    then p_gpt_responses->'emotion_standardization' else null end;
     v_sum  := case when p_gpt_responses ? 'situation_and_journal_summary'
                     then p_gpt_responses->'situation_and_journal_summary' else null end;
     v_roll := case when p_gpt_responses ? 'new_rollup_digest'
