@@ -99,7 +99,7 @@ Table submission_state {
   submit_status text [not null, note: 'pending, fail, ready, done']
   status_reason text [null]
   updated_at timestamptz [not null, default: `now()`]
-  craeted_at timestamptz [not null, default: `now()`]
+  created_at timestamptz [not null, default: `now()`]
   status_log text [null]
 }
 
