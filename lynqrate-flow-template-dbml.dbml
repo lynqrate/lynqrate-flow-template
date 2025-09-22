@@ -29,7 +29,7 @@ Table user_passes {
   user_id uuid [null, ref:> users.id, note:'onDelete: restrict']
   pass_id uuid [not null, ref:> passes.id, note:'restrict']
   remaining_uses int [not null, note:'잔여 회차']
-  purchased_at timestamptz [not null]
+  purchased_at timestamptz [null]
   expires_at timestamptz [not null, note:'구매일 기준 30일 후 만료']
   uuid_code text [not null, unique, note:'이용권 인증 코드']
   first_used_at timestamptz [null, note:'이 이용권이 처음 사용된 시간 (예: 감정 분석 요청됨)']
@@ -40,6 +40,8 @@ Table user_passes {
   is_active boolean [not null, default: true]
   prev_pass_id uuid [null, ref:> user_passes.id, note:'이전 이용권(같은 사용자). onDelete: restrict']
   updated_at timestamptz [null, default: `now()`, note: '마지막 수정 시각 (함수/쿼리에서 직접 now() 세팅)']
+  first_seen_at timestamptz [null]
+  rollup_seed_text text [null]
   note:'이용권 구매 기록. User:Pass = M:N 구조를 해결하는 중간 테이블'
 } 
 
@@ -139,6 +141,7 @@ Table pass_rollup_digests {
   last_entry_no int [not null, default: 0, note: '>= 0, 이 롤링요약에 반영된 마지막 회차 번호(해당 pass 내 1..10)']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
+  entry_no int [null]
 }
 
 Table one_time_email_deliveries {
