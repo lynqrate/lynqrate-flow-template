@@ -138,7 +138,6 @@ Table pass_rollup_digests {
   id uuid [pk, default: 'gen_random_uuid()']
   user_pass_id uuid [not null, unique, ref: > user_passes.id, note: 'ON DELETE CASCADE, 이 이용권의 롤링 요약을 1행으로 유지(유니크)']
   digest_text text [not null, note: '팩트만 담는 누적 요약(3~5줄, ~500자 권장). 조언/명령문 금지']
-  last_entry_no int [not null, default: 0, note: '>= 0, 이 롤링요약에 반영된 마지막 회차 번호(해당 pass 내 1..10)']
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
   entry_no int [null]
