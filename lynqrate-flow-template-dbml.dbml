@@ -59,7 +59,7 @@ Table standard_emotions {
 Table emotion_entries{
   id uuid [pk, default: 'gen_random_uuid()']
   user_pass_id uuid [not null, ref:> user_passes.id, note:'onDelete: cascade']
-  user_id uuid [null, ref:> users.id, note: '직접 연결된 사용자. onDelete: set null']
+  user_id uuid [not null, ref:> users.id, note: '직접 연결된 사용자. onDelete: set null']
   raw_emotion_text text [not null, note:'사용자 입력 원본']
   supposed_emotion_text text [null, note:'GPT가 추정한 감정']
   standard_emotion_id uuid [null, ref:> standard_emotions.id, note:'GPT 분류 결과. onDelete: set null']
@@ -210,4 +210,30 @@ able rpc_debug_log {
   data         jsonb
 
   Note: 'Debug log table. Primary key on id. RLS is enabled.'
+}
+
+Table email_verify_tokens {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null, ref: > users.id, note: 'Index: idx_evt_user']
+  email text [not null]
+  token text [not null, unique, note: 'Index: idx_evt_token']
+  purpose text [not null, default: 'verify']
+  issued_at timestamptz [not null, default: `now()`]
+  expires_at timestamptz [not null, default: `(now() + '00:15:00'::interval)`]
+  used_at timestamptz
+  ip inet
+  user_agent text
+  meta jsonb
+  created_at timestamptz [not null, default: `now()`]
+}
+
+Table revisit_keys {
+  id uuid [pk, default: `gen_random_uuid()`, not null]
+  user_pass_id uuid [not null, ref: > user_passes.id, note: 'FK → user_passes(id), ON DELETE CASCADE\nUnique index (ux_revisit_keys_user_pass)']
+  code text [not null, unique, note: 'Unique key (code), Index (ix_revisit_keys_code)']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  expires_at timestamptz [not null, default: `(now() + interval '30 days')`]
+  last_used_at timestamptz [note: '마지막 사용 시각']
+  revoked_at timestamptz [note: '취소 시각']
 }
